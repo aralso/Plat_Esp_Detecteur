@@ -364,7 +364,6 @@ uint8_t cpt_securite = 0;
 
 unsigned long previousMillis_temp = 20000;  // 1er à 20s
 unsigned long previousMillis_inittime;
-uint8_t compteur_graph;
 char St_Uptime[35];
 uint8_t skip_graph;
 
@@ -521,16 +520,6 @@ void vTimerCycleCallback(TimerHandle_t xTimer)
     }
 }
 
-// timeout chaque 30 secondes : mesure cycle compresseur
-void vTimerCompresseurCallback(TimerHandle_t xTimer)
-{
-    systeme_eve_t evt = { EVENT_CYCLE_Compresseur, 0 };  // Exemple : donnée = 123
-    if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
-    {
-      if (erreur_queue<5) num_err_queue[erreur_queue]=3;
-      erreur_queue++;
-    }
-}
 
 // timeout pour délai ecoute websocket
 void vTimerWebsocketCallback(TimerHandle_t xTimer)
@@ -554,16 +543,6 @@ void vTimerWatchdogCallback(TimerHandle_t xTimer)
     }
 }
 
-// timeout pour chaque cycle
-void vTimerMarChaudCallback(TimerHandle_t xTimer)
-{
-  systeme_eve_t evt = { EVENT_ACTIV_CYCLE, 0};
-  if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
-    {
-      if (erreur_queue<5) num_err_queue[erreur_queue]=5;
-      erreur_queue++;
-    }
-}
 
 
 
@@ -769,10 +748,6 @@ void taskHandler(void *parameter) {
                   }                  
                   break;
                 }
-                case EVENT_ACTIV_CYCLE: {
-                  maj_etat_cycle();
-                  break;
-                }
  
                 case EVENT_GPIO_OFF:  
                     Serial.printf("GPIO:off:%i\n\r", evt.data);
@@ -972,9 +947,6 @@ void taskHandler(void *parameter) {
                   event_cycle();
                   break;
 
-                case EVENT_CYCLE_Compresseur:
-                  //event_mesure_compresseur();
-                  break;
                   
                 case EVENT_ERREUR:
 
@@ -1017,8 +989,6 @@ void init_ram_variables()
   err_Text=0;
   err_Heure=0;
   nb_err_reseau=0;
-  fo_jus=0;
-  chaudiere=0;
   Tint=20.0;
   Text=10.0;
 }
@@ -1609,8 +1579,16 @@ void setup()
     Serial.println("OTA prêt");
   #endif  // fin OTA
 
-  maj_etat_chaudiere_delai(15);
+ // 🔥 Fenêtre OTA de secours
+  Serial.println("Fenêtre OTA 5 secondes...");
+  unsigned long start = millis();
+  while (millis() - start < 5000) {
+    ArduinoOTA.handle();
+    delay(10);
+  }
 
+  WiFi.setSleep(true);
+  
   Serial.println("fin setup:");
 
   #ifdef WATCHDOG
@@ -2643,7 +2621,7 @@ uint8_t requete_SetReg(int param, float valeurf)
     if (param == 4)  // registre 4 : Periode cycle (en minutes)
     {
       //#ifndef DEBUG
-      if ((valeur >= 5) && (valeur <= 60))  // entre 5 et 60 minutes
+      if ((valeur >= 2) && (valeur <= 30))  // entre 2 et 30 minutes
       {
         res = 0;
         periode_cycle = valeur;
@@ -2810,6 +2788,12 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
   p += sprintf(p, "\"TextV\":%.1f,", TextV);  // Temp ext de la veille
   
+  // envoi temp min evaporation, duree fct et arret compresseur
+  for (uint8_t j=0; j<NB_VAL_TAB; j++)
+  {
+    p += sprintf(p, "\"NbPi%d\":%i,", j, Nb_PI[j]);
+  }
+
   // Tableaux : E(erreurs) T(temp)
   if (!type)  // pas d'envoi des graphiques si type=1(maj)
   {

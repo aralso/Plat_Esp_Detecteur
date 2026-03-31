@@ -32,54 +32,21 @@ uint8_t parseMacString(const char* str, uint8_t mac[6]);
 
 // variables Detection PIR
 uint16_t compteur_detection=0;
+uint16_t compteur_detection_1h=0;
 
-// Variables pour le PID
-double Consigne, Input, Output;
-double Kp = 1.7, Ki = 0.5, Kd = 0.5;
-uint16_t Consigne_G, Consigne_HG;
-#define MIN_MAX 5
-uint8_t min_max_pid;
+uint16_t Nb_PI[NB_VAL_TAB];
+
 uint8_t  WIFI_CHANNEL;
 RTC_DATA_ATTR uint8_t etat_now;
 uint16_t Seuil_batt_sonde;  // millivolt
 uint8_t Nb_jours_Batt_log;
-uint8_t Cons_eco;
-uint16_t prolong_veille;
-uint8_t chaud_marche;
-
-// Loi d'eau
-int8_t Pt1;
-uint8_t Pt2, Pt1Val, Pt2Val;
-
-uint8_t HG, MMCh;
-uint8_t mode_regul;
-
-uint8_t activ_cycle;
-int16_t cycle_chaud;
-
-// planning programme chaudiere
-planning_t plan[NB_MAX_PGM];
-
-uint8_t chaudiere;
-unsigned long milli_marche, milli_arret;
-unsigned long last_chaudiere_change = 0;
-
-uint16_t fo_jus;     // nombre de minutes restantes pour forcage consigne.
-uint8_t fo_co;      // consigne de forcage : en dixième de degrés : 0,0° à 25,5°
-uint8_t planning;   // booléen 1:plannig 0:non
-uint8_t vacances;   // booléen 1:vacances 0:non
-uint8_t va_cons;    // consigne pendant les vacances : en dixième de degrés : 0,0° à 25,5°
-uint16_t va_date;   // date de fin de vacances : en nb de jours depuis 2020
-uint8_t va_heure;  // heure de fin de vacances 0h à 24h
-uint8_t cons_fixe;  // booléen 1:consigne fixe  0:non
-uint8_t co_fi;      // consigne fixe : en dixième de degrés : 0,0° à 25,5°
+uint8_t compteur_graph;
 
 
 RTC_DATA_ATTR uint8_t mac_chaudiere[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_chaudiere
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
 
-PID myPID(&Input, &Output, &Consigne, Kp, Ki, Kd, DIRECT);
 uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo);
 
 
@@ -106,48 +73,10 @@ DHT dht[] = {
 
 // Temperature intérieure
 float Tint;
-float loi_eau_Tint;
-
-float T_obj;
-float T_loi_eau;
 
 uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
-// Entrée analogique pour mesurer la température exterieure
-uint16_t Text1, Text2, Text1Val, Text2Val;  // valeurs pour calibration (T*10)
 float Text;
-#define resolutionADC 4095
-#define TBETA 3950  // Coefficient Beta de la thermistance
-uint16_t TBeta;
-#define R0E 10000  // Résistance à 25° pour une NTC10K
-uint16_t Therm0;
-
-uint16_t S_analo_max;  // voltage pour 20°C
-float Teau = 18;
-float TRef = 18;
-
-#define TPACMIN 10
-#define TPACMAX 30
-uint8_t TPacMin, TPacMax;
-
-// Régulation
-#define MODE 1  // 1:STM32 PID  2:ESP PID
-uint8_t Mode;
-
-
-float loi_deau(float temp_ext, float temp_cons, float *Tloi);
-
-#ifdef Temp_int_DS18B20
-  void printAddress(DeviceAddress deviceAddress) {
-    for (uint8_t i = 0; i < 8; i++) {
-      Serial.print("0x");
-      if (deviceAddress[i] < 0x10) Serial.print("0");
-      Serial.print(deviceAddress[i], HEX);
-      if (i < 7) Serial.print(", ");
-    }
-    Serial.println("");
-  }
-#endif
 
 void init_10_secondes()
 {
@@ -198,8 +127,8 @@ void setup_nvs()
   {
     // periode du cycle : lecture Temp ext par internet
     periode_cycle = preferences_nvs.getUChar("cycle", 0);  // de 10 a 120
-    if ((periode_cycle < 10) || (periode_cycle > 120)) {
-      periode_cycle = 15;
+    if ((periode_cycle < 2) || (periode_cycle > 30)) {
+      periode_cycle = 5;
       preferences_nvs.putUChar("cycle", periode_cycle);
       Serial.printf("Raz periode cycle : val par defaut %imin\n\r", periode_cycle);
     }
@@ -215,7 +144,7 @@ void setup_nvs()
     else
       Serial.printf("Mode rapide : %i\n\r", mode_rapide);
 
-    #ifdef ESP_THERMOMETRE
+    #ifdef ESP_VEILLE
       // Initialisation variable adresse Mac chaudiere
       String storedString = preferences_nvs.getString("MacC", "");
 
@@ -253,17 +182,8 @@ void setup_nvs()
 
   }
 
-  #ifndef ESP_THERMOMETRE
+  #ifndef ESP_VEILLE
 
-    Cons_eco = preferences_nvs.getUChar("CoEc", 0);
-
-    if ((Cons_eco < 20) || (Cons_eco >200)) {  // min:2° max:20°
-      Cons_eco = 100;  // consigne eco : 10°
-      preferences_nvs.putUChar("CoEc", Cons_eco);
-      Serial.printf("Raz consigne Eco: %i\n\r", Cons_eco);
-    }
-    else  Serial.printf("Consigne Eco: %i\n\r", Cons_eco);
-    Consigne = Cons_eco;
 
     Seuil_batt_sonde = preferences_nvs.getUShort("SeBa", 0);
     if ((Seuil_batt_sonde < 1800) || (Seuil_batt_sonde >4500)) {  // 1,8V à 4,5V
@@ -281,295 +201,6 @@ void setup_nvs()
     }
     else  Serial.printf("Freq log batt: %i\n\r", Nb_jours_Batt_log);
 
-
-    // Initialisation des coches planning, vacances, cons fixe
-    vacances = preferences_nvs.getUChar("vac", 2);
-    planning = preferences_nvs.getUChar("Pla", 2);
-    cons_fixe = preferences_nvs.getUChar("Cof", 2);
-
-    if (vacances >1) {
-      vacances = 0;  // pas de forcage vacances
-      preferences_nvs.putUChar("vac", vacances);
-      Serial.printf("Raz vacances: %i\n\r", vacances);
-    }
-    else  Serial.printf("Vacances: %i\n\r", vacances);
-
-    if ( planning + cons_fixe == 1)
-    {
-      Serial.printf("Planning: %i  Cons_fixe:%i\n\r", planning, cons_fixe);
-    }
-    else
-    {
-      planning=0;
-      cons_fixe=1;
-      preferences_nvs.putUChar("Cof", cons_fixe);
-      preferences_nvs.putUChar("Pla", planning);
-      Serial.printf("Raz planning=0 Cons_fixe=1\n\r");
-    }
-
-    va_cons = preferences_nvs.getUChar("VaCo", 0);
-
-    if ((va_cons < 40) || (va_cons >230)) {  // min:4° max:23°
-      va_cons = 100;  // consigne vacances : 10°
-      preferences_nvs.putUChar("VaCo", va_cons);
-      Serial.printf("Raz consigne vacances: %i\n\r", va_cons);
-    }
-    else  Serial.printf("Consigne Vacances: %i\n\r", va_cons);
-
-    co_fi = preferences_nvs.getUChar("CoFi", 0);
-
-    if ((co_fi < 40) || (co_fi >230)) {  // min:4° max:23°
-      co_fi = 100;  // consigne fixe : 10°
-      preferences_nvs.putUChar("CoFi", co_fi);
-      Serial.printf("Raz consigne fixe: %i\n\r", co_fi);
-    }
-    else  Serial.printf("Consigne fixe: %i\n\r", co_fi);
-
-    va_date = preferences_nvs.getUShort("VaDa", 0);
-    if ((va_date < 1800)) {  // > 5 ans
-      va_date = 2500;  // Date fin vacances
-      preferences_nvs.putUShort("VaDa", va_date);
-      Serial.printf("Raz date fin vacances: %i jours\n\r", va_date);
-    }
-    else  Serial.printf("Date fin Vacances: %i jours\n\r", va_date);
-
-    va_heure = preferences_nvs.getUChar("VaHe", 150);
-    if ((va_heure >143)) {  // 0h à 143
-      va_heure = 0;  // heure fin vacances : 0h
-      preferences_nvs.putUChar("VaHe", va_heure);
-      Serial.printf("Raz heure fin vacances: %i\n\r", va_heure);
-    }
-    else  Serial.printf("Heure fin Vacances: %i\n\r", va_heure);
-
-
-
-
-      // Initialisation des valeurs de PID
-    Kp = (float)preferences_nvs.getUShort("Kp", 0) / 100;    //  *100
-    Ki = (float)preferences_nvs.getUShort("Ki", 0) / 10000;  //  *10000
-    Kd = (float)preferences_nvs.getUShort("Kd", 0) / 10000;  //  *10000
-    uint8_t err_coeff = 0;
-    if ((!Kp)) err_coeff = 1;
-    if (Kp > 2) err_coeff = 1;
-    if (err_coeff) {
-      Serial.println("PID: nouvelles valeurs par défaut");
-      Kp = 1.66;
-      Ki = 2;
-      Kd = 0.1;
-      preferences_nvs.putUShort("Kp", 166);  // *100
-      preferences_nvs.putUShort("Ki", 10000);  // *10000
-      preferences_nvs.putUShort("Kd", 1000);  // *10000
-      Serial.printf("Raz PID: Kp:%.2f  Ki:%.4f  Kd:%.4f\n\r", Kp, Ki, Kd);
-    }
-    //else
-    //  Serial.printf("PID: Kp:%.2f  Ki:%.4f  Kd:%.4f\n\r", Kp, Ki, Kd);
-    myPID.SetTunings(Kp, Ki, Kd);
-
-
-
-
-    /*  // Lecture des temperatures PAC minimum et Maximum
-      TPacMin = preferences_nvs.getUChar("Tmin", 0);  // 10°C
-      TPacMax = preferences_nvs.getUChar("Tmax", 0);  // 30°C
-      if ((TPacMin < 5) || (TPacMin > 30) || (TPacMax < 15) || (TPacMax > 40) || (TPacMin >= TPacMax)) {
-        TPacMin = TPACMIN;
-        TPacMax = TPACMAX;
-        Serial.printf("Raz Min-Max: %i°C  %i°C\n", TPacMin, TPacMax);
-        preferences_nvs.putUChar("Tmin", TPacMin);  //
-        preferences_nvs.putUChar("Tmax", TPacMax);  //
-      } else
-        Serial.printf("TPAC Min-Max: %i°C  %i°C\n", TPacMin, TPacMax);*/
-
-
-      /* Text1 = preferences_nvs.getUShort("T1", 0);   // 10°C  *10
-      Text2 = preferences_nvs.getUShort("T2", 0);   // 20°C
-      Text1Val = preferences_nvs.getUShort("T1V", 0); // 500
-      Text2Val = preferences_nvs.getUShort("T2V", 0); // 2000
-      uint8_t err_calib_sonde=0;
-      if ((Text1<10) || (Text1>200)) err_calib_sonde=1;  // 1°C à 20°C
-      if ((Text2<150) || (Text2>300)) err_calib_sonde=1; // 15°C à 30°C
-      if ((Text1>Text2) || (Text2-Text1<50)) err_calib_sonde=1; // au moins 5°C d'écart
-      if ((Text1Val<Text2Val) || (Text1Val-Text2Val<200)) err_calib_sonde=1; // au moins 200 d'écart
-      if (err_calib_sonde)
-      {
-        Serial.println("Calib T.Ext: nouvelles valeurs par défaut");
-        Text1 = 70;  // 7°C
-        Text2 = 250;  // 25°C
-        Text1Val = 2673;
-        Text2Val = 1630;
-        preferences_nvs.putUShort("T1", Text1);   // 
-        preferences_nvs.putUShort("T2", Text2);   // 
-        preferences_nvs.putUShort("T1V", Text1Val); // 
-        preferences_nvs.putUShort("T2V", Text2Val); // 
-      } 
-      Serial.printf("Calib T.Ext: Point1: %i pour %.1f°C   Point2: %i°C -> %.1f°C\n", Text1Val, (float)Text1/10, Text2Val, (float)Text2/10) ;*/
-
-      // Mode regulation : 1:normal, 2:loi d'eau avec Text, 3:fixe
-      mode_regul = preferences_nvs.getUChar("REGUL", 0);
-      if ((!mode_regul) || (mode_regul > 3)) {
-        mode_regul = 1;
-        preferences_nvs.putUChar("REGUL", mode_regul);
-        Serial.printf("Raz mode Regul:%i\n\r", mode_regul);
-      } 
-      //else
-      //  Serial.printf("mode Regul:%i\n\r", mode_regul);
-
-
-      TRef = (float)preferences_nvs.getUShort("TRef", 0) / 10;  // pour le cas de mode_regul=fixe
-      if ((TRef < 10) || (TRef > 30)) {
-        TRef = 18.0;
-        preferences_nvs.putUShort("TRef", 180);
-        Serial.printf("Raz TRef:%f\n", TRef);
-      } 
-      //else
-      //  Serial.printf("TRef=%f\n", TRef);
-
-
-      // Mode 1 : PID=STM32  2:PID=ESP32
-      Mode = preferences_nvs.getUChar("Mode", 0);
-      if ((!Mode) || (Mode > 3)) {
-        Mode = MODE;
-        preferences_nvs.putUChar("Mode", Mode);
-        Serial.printf("Raz Mode PID:%i\n", Mode);
-      }
-      //else
-      //  Serial.printf("Mode PID :%i\n", Mode);
-
-      // valeurs de la loi d'eau
-      Pt1 = preferences_nvs.getUChar("Pt1", 0) - 30;  // -5°C +30 =>25
-      Pt1Val = preferences_nvs.getUChar("Pt1V", 0);   // 35°C
-      Pt2 = preferences_nvs.getUChar("Pt2", 0);       // 20°C
-      Pt2Val = preferences_nvs.getUChar("Pt2V", 0);   // 20°C
-      uint8_t err_loi_eau = 0;
-      if ((Pt1 < -10) || (Pt1 > 15)) err_loi_eau = 1;                   // -10°C à 15°C
-      if ((Pt2 < 10) || (Pt2 > 30)) err_loi_eau = 1;                    // 10°C à 30°C
-      if ((Pt1 > Pt2) || (Pt2 - Pt1 < 10)) err_loi_eau = 1;             // au moins 10°C d'écart
-      if ((Pt1Val < Pt2Val) || (Pt1Val - Pt2Val < 5)) err_loi_eau = 1;  // au moins 5° d'écart
-      if (err_loi_eau) {
-        Serial.println("Loi d'eau: nouvelles valeurs par défaut");
-        Pt1 = -5;     // -5°C
-        Pt1Val = 35;  // 35°C
-        Pt2 = 20;     // 20°C
-        Pt2Val = 20;  // 20°C
-        preferences_nvs.putUChar("Pt1", Pt1 + 30);
-        preferences_nvs.putUChar("Pt1V", Pt1Val);
-        preferences_nvs.putUChar("Pt2", Pt2);
-        preferences_nvs.putUChar("Pt2V", Pt2Val);
-        Serial.printf("Raz Loi d'eau: Point1: %i°C -> %i°C   Point2: %i pour %i°C\n\r", Pt1, Pt1Val, Pt2, Pt2Val);
-      }
-      //else
-      //  Serial.printf("Loi d'eau: Point1: %i°C -> %i°C   Point2: %i pour %i°C\n\r", Pt1, Pt1Val, Pt2, Pt2Val);
-
-
-
-      min_max_pid = preferences_nvs.getUChar("MPid", 0);
-      if ((min_max_pid < 2) || (min_max_pid > 10)) {
-        min_max_pid = MIN_MAX;  //5
-        preferences_nvs.putUChar("MPid", min_max_pid);
-        Serial.printf("Raz Min_max_Pid: %i\n", min_max_pid);
-      }
-      //else
-      //  Serial.printf("Min_max_Pid: %i\n", min_max_pid);
-
-
-      // Initialisation des variables de consignes/HG/MMC
-      Consigne_G = preferences_nvs.getUChar("Cons", 0);   //  *10
-      MMCh = preferences_nvs.getUChar("MMC", 0);   //  *10
-      Consigne_HG = preferences_nvs.getUChar("C_HG", 0);  //  *10
-      HG = preferences_nvs.getUChar("HG", 0);
-      if ((Consigne_G < 130) || (Consigne_G > 220))  // entre 13°C et 22°C
-      {
-        Serial.println("Raz consigne :  valeur par defaut:15°C");
-        Consigne_G = 150;  //15°C
-        preferences_nvs.putUChar("Cons", Consigne_G);
-      }
-      if ((Consigne_HG < 80) || (Consigne_HG > 160))  // entre 8°C et 16°C
-      {
-        Serial.println("consigne Hors-gel: nouvelle valeur par defaut");
-        Consigne_HG = 120;  //12°C
-        preferences_nvs.putUChar("C_HG", Consigne_HG);
-      }
-      if ((!HG) || (HG > 2))  // 1:non 2:HG
-      {
-        Serial.println("HG : non actif par defaut");
-        HG = 1;
-        preferences_nvs.putUChar("HG", HG);
-      }
-      //if (HG == 2) Consigne = (float)Consigne_HG / 10;
-      //else Consigne = (float)Consigne_G / 10;
-
-
-      if ((!MMCh) || (MMCh>2))
-      {
-        Serial.println("Raz Chauffage : inactif pas défaut");
-        MMCh = 1;
-        preferences_nvs.putUChar("MMC", MMCh);
-      }
-      //Serial.printf("Chauf:%i Consigne:%.1f Consigne_G:%i HG:%i Consigne_HG:%i \n", MMCh, Consigne, Consigne_G, HG, Consigne_HG);
-
-
-
-
-      // Initialisation ratio Tint sur loi d'eau (écart par rapport à 20°C)
-      loi_eau_Tint = float(preferences_nvs.getUChar("LoiTint", 0))/100;
-      if ((loi_eau_Tint<0.5) || (loi_eau_Tint > 2.5))  // autour de 1.5
-      {
-        loi_eau_Tint = 1.5;
-        Serial.printf("Raz loi_eau_Tint : valeur par defaut:%.2f\n\r", loi_eau_Tint);
-        preferences_nvs.putUChar("LoiTint", (uint8_t)(loi_eau_Tint*100));
-      }
-      //else
-      //  Serial.printf("loi_eau_Tint : %.2f\n\r", loi_eau_Tint);
-
-      // Initialisation du PID
-      //myPID.SetMode(AUTOMATIC);                          // Active le PID
-      //myPID.SetOutputLimits(-min_max_pid, min_max_pid);  // Limites de la commande (-10+10)
-
-
-      // Lecture des programmes 1, 2, 3
-      char key[10];
-      for (uint8_t i = 0; i < NB_MAX_PGM; i++) {
-        sprintf(key, "P%d_deb", i);
-        plan[i].ch_debut = preferences_nvs.getUChar(key, 0); // 0 à 143
-        if (plan[i].ch_debut > 143) {
-          plan[i].ch_debut = 0;
-          preferences_nvs.putUChar(key, 0);
-          Serial.printf("Raz Plan %d debut\n", i);
-        }
-
-        sprintf(key, "P%d_fin", i);
-        plan[i].ch_fin = preferences_nvs.getUChar(key, 0); // 0 à 143
-        if (plan[i].ch_fin > 143) {
-          plan[i].ch_fin = 0;
-          preferences_nvs.putUChar(key, 0);
-          Serial.printf("Raz Plan %d fin\n", i);
-        }
-
-        sprintf(key, "P%d_typ", i);
-        plan[i].ch_type = preferences_nvs.getUChar(key, 0); // 0 à 2
-        if (plan[i].ch_type > 2) {
-          plan[i].ch_type = 0;
-          preferences_nvs.putUChar(key, 0);
-          Serial.printf("Raz Plan %d type\n", i);
-        }
-
-        sprintf(key, "P%d_con", i);
-        plan[i].ch_consigne = preferences_nvs.getUChar(key, 190); // 50 à 230
-        if ((plan[i].ch_consigne < 50) || (plan[i].ch_consigne > 230)) {
-          plan[i].ch_consigne = 190; // 19°C
-          preferences_nvs.putUChar(key, 190);
-          Serial.printf("Raz Plan %d consigne\n", i);
-        }
-
-        sprintf(key, "P%d_apr", i);
-        plan[i].ch_cons_apres = preferences_nvs.getUChar(key, 170); // 30 à 230
-        if ((plan[i].ch_cons_apres < 30) || (plan[i].ch_cons_apres > 230)) {
-          plan[i].ch_cons_apres = 170; // 17°C
-          preferences_nvs.putUChar(key, 170);
-          Serial.printf("Raz Plan %d cons_apres\n", i);
-        }
-        Serial.printf("Plan %d : %d-%d Typ:%d Cons:%d Apr:%d\n", i, plan[i].ch_debut, plan[i].ch_fin, plan[i].ch_type, plan[i].ch_consigne, plan[i].ch_cons_apres);
-      }
   #endif  // Fin ESP_chaudiere et PAC
 
 
@@ -580,7 +211,7 @@ void setup_nvs()
 void setup_1()
 {
   // initialisation capteur de température intérieur
-  #ifdef ESP_THERMOMETRE
+  #ifdef ESP_VEILLE
     Tint = 15;
     #ifdef Temp_int_DHT22
       dht[0].begin();
@@ -637,7 +268,7 @@ void setup_1()
 // apres demarrage reseau
 void setup_2()
 {
-  #ifdef ESP_CHAUDIERE
+  #ifdef ESP_TJ_ACTIF
     // Configuration WiFi en mode Station pour ESP-NOW
 
     if ((mode_reseau==13) )
@@ -671,7 +302,7 @@ void setup_2()
     //  Serial.println(WiFi.softAPmacAddress());
 
     // Stockage de l'adresse MAC dans le tableau mac_chaudiere[6]
-    #ifdef ESP_THERMOMETRE
+    #ifdef ESP_VEILLE
         Serial.println(WiFi.macAddress());
     #else
       String macStr = WiFi.macAddress();
@@ -694,20 +325,21 @@ void setup_2()
 
 void appli_event_on(systeme_eve_t evt)
 {
-  // Detecteur PIR activé
-  if (evt.data == 1)
-  {
-    writeLog('D', 1, 0, 0, "PIR");
-    compteur_detection++;
-    if (compteur_detection == 1) // premiere detection du cyle
-    {
-      // envoi d'un sms par http pour prevenir d'une presence
-    }
-  }
 }
 
 void appli_event_off(systeme_eve_t evt)
 {
+  // Detecteur PIR activé
+  if (evt.data == 1)
+  {
+    compteur_detection++;  // nb de detection des 5 dernières minutes
+    compteur_detection_1h++; // nb de detection de la dernière heure
+    if (compteur_detection_1h == 1) // premiere detection du cyle 1h
+    {
+      writeLog('D', 1, 0, 0, "PIR");
+      // envoi d'un sms par http pour prevenir d'une presence
+    }
+  }
 }
 
 // type 1
@@ -724,93 +356,12 @@ uint8_t requete_Get_appli(const char* var, float *valeur)
     res = 0;
     *valeur = Text;
   }
-  if (strncmp(var, "Teau",5) == 0) {
-    res = 0;
-    *valeur = Teau;
-  }
-  if (strncmp(var, "Kp",3) == 0) {
-    res = 0;
-    *valeur = Kp;
-  }
-  if (strncmp(var, "Ki",3) == 0) {
-    res = 0;
-    *valeur = Ki;
-  }
-  if (strncmp(var, "Kd",3) == 0) {
-    res = 0;
-    *valeur = Kd;
-  }
-  if (strncmp(var, "consigne",9) == 0) {
-    res = 0;
-    *valeur = Consigne;
-  }
-  if (strncmp(var, "HG",3) == 0) {
-    res = 0;
-    *valeur = HG-1;
-  }
-/*  if (strncmp(var, "Ballon",7) == 0) {
-    res = 0;
-    *valeur = Ballon;
-  }*/
-  if (strncmp(var, "MMC",4) == 0) {
-    res = 0;
-    *valeur = MMCh-1;
-  }
   if (strncmp(var, "codeR_pac",10) == 0) {
     res = 0;
     if (cpt_securite)  *valeur=1;
     else *valeur=0;
   }
-  if (var[0] == 'P' && strlen(var) == 4 && var[2] == '_')
-  {
-    uint8_t i = var[1] - '0';
-    uint8_t f = var[3] - '0';
 
-    if (i < NB_MAX_PGM) {
-      if (f == 0) *valeur = plan[i].ch_debut;
-      else if (f == 1) *valeur = plan[i].ch_fin;
-      else if (f == 2) *valeur = plan[i].ch_type;
-      else if (f == 3) *valeur = plan[i].ch_consigne;
-      else if (f == 4) *valeur = plan[i].ch_cons_apres;
-    res=0;
-    }
-  }
-  if (strncmp(var, "fo_jus",7) == 0) {
-    res = 0;
-    *valeur = fo_jus;
-  }
-  if (strncmp(var, "fo_co",6) == 0) {
-    res = 0;
-    *valeur = fo_co;
-  }
-  if (strncmp(var, "planning",9) == 0) {
-    res = 0;
-    *valeur = planning;
-  }
-  if (strncmp(var, "vacances",9) == 0) {
-    res = 0;
-    *valeur = vacances;
-  }
-  if (strncmp(var, "va_cons",8) == 0) {
-    res = 0;
-    *valeur = va_cons;
-  }
-  if (strncmp(var, "va_date",8) == 0) {
-    res = 0;
-    *valeur = va_date;
-  }
-  if (strncmp(var, "va_heure",9) == 0) {
-    res = 0;
-    *valeur = va_heure;
-  }
-  if (strncmp(var, "cons_fixe",10) == 0) {
-    res = 0;
-    *valeur = cons_fixe;
-  }
-  if (strncmp(var, "co_fi",6) == 0) {
-    res = 0;
-    *valeur = co_fi;
-  }
 
   return res;
 }
@@ -824,7 +375,7 @@ uint8_t requete_Set_appli (String param, float valf)
   uint8_t res=1;
   int8_t val = round(valf);
 
-    if (param == "consigne")     // Forcage consigne, rajouter duree
+    /*if (param == "consigne")     // Forcage consigne, rajouter duree
     {
       if ((valf >= 6.0) && (valf <= 22.0))  // 6°C à 22°C
       {
@@ -833,7 +384,7 @@ uint8_t requete_Set_appli (String param, float valf)
           //preferences_nvs.putUChar("Cons", Consigne_G);
           res = 0;
       }
-    }
+    }*/
 
     if (param == "vbatt")
     {
@@ -868,7 +419,7 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
   {
     res = 0;
     uint8_t current_channel;
-    #ifdef ESP_THERMOMETRE
+    #ifdef ESP_VEILLE
       current_channel = last_wifi_channel;
     #else
       wifi_second_chan_t second;
@@ -1011,7 +562,7 @@ uint8_t lecture_Tint(float *mesure)
   uint8_t Tint_erreur = 7;
   float valeur = 20;
 
-  #ifdef ESP_THERMOMETRE
+  #ifdef ESP_VEILLE
 
     #ifdef Temp_int_DHT22
       //dht[0].begin();
@@ -1157,13 +708,22 @@ uint8_t fetch_internet_temp() {
 void event_cycle()  // toutes les 15 minutes 
 {
 
-  #ifdef ESP_CHAUDIERE
+  #ifdef ESP_TJ_ACTIF
     // --- MODE CHAUDIERE ---
     // Récupération de la température extérieure par internet
     fetch_internet_temp();
 
     
     uint8_t i;
+
+    // chaque 5 minutes
+    for (i = NB_VAL_TAB - 1; i; i--) {
+        Nb_PI[i]= Nb_PI[i - 1];
+    }    
+    Nb_PI[0] = compteur_detection;
+    compteur_detection=0;
+
+    // chaque heure
     compteur_graph++;
     if (compteur_graph >= skip_graph)  // 1 valeur sur x
     {
@@ -1175,30 +735,26 @@ void event_cycle()  // toutes les 15 minutes
       }
       graphique[0][0] = round(Tint * 10);
       graphique[0][1] = round(Text * 10);
-      graphique[0][2] = compteur_detection*10+1;  // A partie de 1 pour éviter les valeurs nulles dans le graphique
-      compteur_detection = 0;
+      graphique[0][2] = compteur_detection_1h*10+1;  // A partir de 1 pour éviter les valeurs nulles dans le graphique
+      if (compteur_detection_1h>1)  // au moins 2
+      {
+        uint8_t tot = (uint8_t)compteur_detection_1h;
+        if (compteur_detection_1h > 255) tot = 255;
+        writeLog('D', 1, tot, 0, "PIR 1h");
+      }
+      compteur_detection_1h = 0;
     }
     tempI_moy24h += Tint;
     cpt24_Tint++;
     tempE_moy24h += Text;
     cpt24_Text++;
-    PIR_24h += compteur_detection;
+    PIR_24h += compteur_detection_1h;
     cpt24_PIR++;
 
     // cout moyen
   #endif
 }
 
-
-float loi_deau(float temp_ext, float temp_cons, float *Tloi) {
-  float temp_obj;
-  *Tloi = (temp_ext - Pt1) / (Pt2 - Pt1) * (Pt2Val - Pt1Val) + Pt1Val;
-  // adaptation a la consigne
-  temp_obj = *Tloi + (temp_cons - 20) * loi_eau_Tint;
-  if (temp_obj < TPacMin) temp_obj = TPacMin;
-  if (temp_obj > TPacMax) temp_obj = TPacMax;
-  return temp_obj;
-}
 
 
 float readBatteryVoltage() {
@@ -1213,7 +769,7 @@ float readBatteryVoltage() {
   return voltage;
 }
 
-#ifdef ESP_CHAUDIERE
+#ifdef ESP_TJ_ACTIF
 // Callback reception ESP-NOW
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 //void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {

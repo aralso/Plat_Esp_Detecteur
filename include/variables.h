@@ -6,8 +6,8 @@
 // variables externes
 
 
-#define ESP_CHAUDIERE      // Rôle principal : gestion de la chaudière
-//#define ESP_THERMOMETRE  // Rôle distant : sonde de température
+#define ESP_TJ_ACTIF      // Rôle principal : gestion de la chaudière
+//#define ESP_VEILLE  // Rôle distant : sonde de température
 
 // Hardware
 //#define MODE_WT32  // WT32-Eth01 sinon ESP32-CAM ou DOIT ESP32 Devkit V1
@@ -15,7 +15,7 @@
 //#define DEBUG  // mode station, pas de websocket, pas de sécurite, emulation valeurs STM32
 //#define ESP32_v1    // DOIT ESP32 DEVKIt V1
 
-#ifdef ESP_THERMOMETRE
+#ifdef ESP_VEILLE
   //#define ESP32_Fire2
   #define ESP32_uPesy
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
@@ -24,7 +24,7 @@
   #define Sans_websocket
 #endif
 
-#ifdef ESP_CHAUDIERE  // Chaudiere
+#ifdef ESP_TJ_ACTIF  // Chaudiere
   #define ESP32_uPesy
   #define OTA
   //#define ESP32_Fire2
@@ -167,7 +167,6 @@ float readBatteryVoltage();
 void lectureHeure();
 void requete_status(char* json_response, uint8_t socket, uint8_t type);
 void recep_message1(UartMessage_t* messa);  // recept_uart1
-void maj_etat_chaudiere_delai(uint8_t delai);
 void modif_timer_cycle(void);
 void traitement_rx(UartMessage_t* mess);
 uint8_t requete_Get_appli(const char* var, float* valeur);
@@ -190,13 +189,11 @@ typedef enum {
   EVENT_GPIO_OFF,
   EVENT_ERREUR,
   EVENT_ECOUTE_WebSock,
-  EVENT_CYCLE_Compresseur,
   EVENT_WATCHDOG,
   EVENT_24H,
   EVENT_3min,
   EVENT_CYCLE,
-  EVENT_UART1,
-  EVENT_ACTIV_CYCLE
+  EVENT_UART1
 } systeme_eve_type_t;
 
 // Structure d'un événement tache sequenceur
@@ -228,11 +225,15 @@ typedef struct {
 #define Code_erreur_wifi 9
 #define Code_erreur_esp_now 10
 
-#define DEBOUNCE_INTERVAL 300  // Temps anti-rebond en ms
 
 constexpr int NB_Graphique =
     6;  // Temp Ext, Temp int, Chaud, MoyText, MoyTint, Cout,
 constexpr int NB_Val_Graph = 99;
+
+#define NB_VAL_TAB  12
+
+#define MAX_DUMP 6900              // 600 + 1050 car par graphique
+extern char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
 
 extern uint8_t protocole;
 extern QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
@@ -243,21 +244,11 @@ extern RTC_DATA_ATTR uint8_t periode_cycle;
 extern RTC_DATA_ATTR uint8_t mode_rapide;
 
 extern uint16_t compteur_detection;
-extern float Teau, Tint, Text, loi_eau_Tint, T_obj, T_loi_eau;
+extern uint16_t Nb_PI[];
 
-#define MAX_DUMP 6900              // 600 + 1050 car par graphique
-extern char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
+extern float Tint, Text;
 
-extern uint16_t date_ac;
 extern uint8_t cpt_securite;
-extern double Consigne, Input, Output;
-extern double Kp, Ki, Kd;
-extern uint16_t Consigne_G, Consigne_HG;
-extern uint8_t HG, Ballon;
-extern uint8_t mode_pid;
-extern const int PIN_Tint;
-extern uint8_t skip_graph;
-extern uint8_t MMCh;
 extern uint8_t WIFI_CHANNEL;
 extern RTC_DATA_ATTR uint8_t
     last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
@@ -269,30 +260,11 @@ extern volatile int ackChannel;       // canal où ça a marché
 extern uint8_t mode_reseau;
 extern uint8_t init_time;
 extern float heure;
+extern uint8_t skip_graph;
 
-extern uint8_t activ_cycle;
-extern int16_t cycle_chaud;
-extern unsigned long milli_marche, milli_arret;
-
-extern planning_t plan[];
-extern uint16_t fo_jus;  // nb minutes restantes de forcage consigne
-extern uint8_t
-    fo_co;  // consigne de forcage : en dixième de degrés : 0,0° à 25,5°
-extern uint8_t planning;  // booléen 1:plannig 0:non
-extern uint8_t vacances;  // booléen 1:vacances 0:non
-extern uint8_t va_cons;  // consigne pendant les vacances : en dixième de degrés
-                         // : 0,0° à 25,5°
-extern uint16_t
-    va_date;  // date de fin de vacances : en nb de jours depuis 2020
-extern uint8_t va_heure;   // heure de fin de vacances 0h à 24h
-extern uint8_t cons_fixe;  // booléen 1:consigne fixe  0:non
-extern uint8_t co_fi;  // consigne fixe : en dixième de degrés : 0,0° à 25,5°
-
-extern unsigned long last_chaudiere_change;
 extern unsigned long last_remote_Tint_time, last_remote_Text_time,
     last_remote_heure_time;
 extern uint16_t err_Tint, err_Text, err_Heure;
-extern uint8_t chaudiere;
 
 extern float tempI_moy24h, tempE_moy24h, PIR_24h;
 extern uint8_t cpt24_Tint, cpt24_Text, cpt24_PIR;
@@ -300,14 +272,10 @@ extern uint8_t cpt24_Tint, cpt24_Text, cpt24_PIR;
 extern char mdp_routeur[];
 extern int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_sonde;  // millivolt
-extern uint8_t Cons_eco;
-extern TimerHandle_t xTimer_cycle_chaud;
-extern uint8_t compteur_graph;
 
 extern RTC_DATA_ATTR uint8_t etat_now;
 extern uint8_t Nb_jours_Batt_log;
 
-extern uint8_t etat_compr;
 extern volatile bool force_stay_awake;
 extern unsigned long wake_up_time;  // Temps de réveil/dernière activité
 
@@ -334,8 +302,6 @@ uint8_t requete_Set_String_appli(int param, const char* texte);
 uint8_t lecture_Tint(float* mesure);
 uint8_t lecture_Text(float* mesure);
 void event_cycle();
-void maj_etat_cycle();
-void event_mesure_compresseur();
 
 // Fonctions WiFi
 uint8_t connectWiFiWithDiagnostic();

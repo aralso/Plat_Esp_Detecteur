@@ -153,6 +153,13 @@ const char index_html[] PROGMEM = R"rawliteral(
                 </div>
             </div>
 
+            <table class="pgm" id="cycle_table">
+              <tr>
+                <th>depuis</th>
+                <th>Nb detections</th>
+              </tr>
+            </table>
+
 
             <p>Graphique Temp-Detections : </p>
             <canvas id = "schema" height="195" width="300" style="border:1px solid" class="graph-group">
@@ -495,38 +502,18 @@ const char index_html[] PROGMEM = R"rawliteral(
           CoutV:5,
       };
 
-      document.getElementById("va_date").addEventListener("input", function () {
-        document.getElementById("va_date_value").textContent = this.value;
-      });
+      const NB_CYCLES = 12;
+      let html = "";
 
-      document.getElementById("fo_cancel").addEventListener("click", () => {
-          VisibiliteGroup("jusque-group", 0);
-          sendValueToESP("fo_jus", 0);
-          setTimeout(() => { get_value('consigne'); }, 1000);
-      });
+      for (let i = 0; i < NB_CYCLES; i++) {
+        html += `
+          <tr>
+            <td>${(i+1) * 5} min</td>
+            <td><span id="NbPi${i}" class="default-action"></span></td>
+          </tr>`;
+      }
+      document.getElementById("cycle_table").innerHTML += html;
 
-      document.getElementById("cons_fixe").addEventListener("change", function () {
-          VisibiliteGroup("co_fi-group", this.checked ? 1 : 0);
-      });
-
-      document.getElementById("vacances").addEventListener("change", function () {
-          VisibiliteGroup("vac-d-group", this.checked ? 1 : 0);
-      });
-
-      document.getElementById("consigne").addEventListener("change", function () {
-          const valeurConsigne = this.value;
-          if (valeurConsigne === "") return;
-
-          const heures = prompt("Durée du forçage consigne (en heures) :",  "2" );
-
-          if (heures === null) { return;  }
-
-          const duree = parseInt(heures, 10);
-          if (isNaN(duree) || duree <= 0 || duree > 15) { alert("Durée invalide"); return; }
-
-          const dureeMinutes = duree * 60;
-          sendValueToESP("fo_jus", dureeMinutes);
-      });
       
       const updateValue = (el, value, updateRemote) => {   // mise à jour de la valeur sur la page web
         updateRemote = updateRemote == null ? true : updateRemote
