@@ -30,6 +30,9 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
 
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
 
+// variables Detection PIR
+uint16_t compteur_detection=0;
+
 // Variables pour le PID
 double Consigne, Input, Output;
 double Kp = 1.7, Ki = 0.5, Kd = 0.5;
@@ -691,6 +694,16 @@ void setup_2()
 
 void appli_event_on(systeme_eve_t evt)
 {
+  // Detecteur PIR activé
+  if (evt.data == 1)
+  {
+    writeLog('D', 1, 0, 0, "PIR");
+    compteur_detection++;
+    if (compteur_detection == 1) // premiere detection du cyle
+    {
+      // envoi d'un sms par http pour prevenir d'une presence
+    }
+  }
 }
 
 void appli_event_off(systeme_eve_t evt)
@@ -802,213 +815,8 @@ uint8_t requete_Get_appli(const char* var, float *valeur)
   return res;
 }
 
-// Mise à jour de l'état de la chaudière au bout de delai
-void maj_etat_chaudiere_delai(uint8_t delai)
-{
-  xTimerStop(xTimer_activ_chaud,100);
-  xTimerChangePeriod(xTimer_activ_chaud,(uint32_t)delai*(1000/portTICK_PERIOD_MS),100);
-  xTimerStart(xTimer_activ_chaud,100);
-}
 
 
-// Mise à jour de l'état de la chaudière avec sécurité 20s
-void maj_etat_chaudiere()
-{
-  #ifdef ESP_CHAUDIERE
-  activ_cycle = 0;
-  cycle_chaud=0;
-  //Serial.printf("MMCh:%i\n\r", MMCh);
-  Consigne = Cons_eco;
-
-  if (MMCh==2)
-  {
-    if (init_time) lectureHeure(); // recupere heure et date_ac
-    
-    // Ordre de choix : 
-    // 1:forcage court
-    // 2:forcage_vacances
-    // 3. Consigne Fixe
-    // 4. Planning
-    uint8_t cons_chaud = Cons_eco;  // 10°C par defaut
-
-    if (fo_jus)  // forcage  court
-    {
-      cons_chaud = fo_co;
-      if (fo_jus > periode_cycle)      fo_jus -= periode_cycle;
-      else fo_jus=0;
-    }
-    else 
-    {
-      if (vacances)   // forcage vacances
-      {
-        cons_chaud = va_cons;
-        if ((date_ac >= va_date) && (heure >= va_heure))  // fin des vacances
-        {
-            vacances = 0;
-            preferences_nvs.putUChar("vac", vacances);
-        }
-      }
-      if (!vacances)
-      {
-        if (cons_fixe)  // consigne fixe
-        {
-            cons_chaud = co_fi;
-        }
-        else if (planning)  // planning
-        {
-          uint8_t planning_actif = 0;
-          uint8_t consigne_apres_max = 60; // Pour stocker la consigne "après" du dernier programme terminé
-          uint8_t delai_plus_petit = 145; // delai de fin le plus petit
-
-          // 1. Parcours des programmes pour trouver une tranche active
-          for (uint8_t i = 0; i < NB_MAX_PGM; i++) 
-          {
-
-            // Si programme definis (non nul)
-            if (plan[i].ch_debut != 0 || plan[i].ch_fin != 0) 
-            {
-                // Vérification si on est dans la tranche horaire
-                uint8_t tr=0;
-                if (plan[i].ch_debut < plan[i].ch_fin)  // cas normal
-                {
-                    if (heure*6 >= plan[i].ch_debut && heure*6 < plan[i].ch_fin) tr=1;
-                }
-                else
-                {
-                    if (heure*6 >= plan[i].ch_debut || heure*6 < plan[i].ch_fin) tr=1;
-                }
-                if (tr)
-                {
-                  cons_chaud = plan[i].ch_consigne;
-                  planning_actif = 1;
-                  Serial.printf("Planning %d Actif : Consigne = %i\n", i, cons_chaud);
-                  break; // Priorité trouvée, on sort
-                }
-
-                // Mémorisation du programme terminé le plus tardif pour la gestion "après"
-                // heure = 18  h_fin=10 =>8   h=18  h_fin=19=>23
-                int16_t delai = heure*6 - plan[i].ch_fin;
-                if (delai <0) delai += 144;
-                if (delai <= delai_plus_petit) 
-                {
-                  delai_plus_petit = delai;
-                  consigne_apres_max = plan[i].ch_cons_apres;
-                }
-            }
-          }
-          // 2. Si aucune tranche horaire active, on applique la consigne "après" du dernier programme terminé
-          if (!planning_actif) 
-          {
-            if (consigne_apres_max != 0) 
-            {
-              cons_chaud = consigne_apres_max;
-              Serial.printf("Planning Inactif. delai: %i. Consigne Apres = %i\n", delai_plus_petit, cons_chaud);
-            }
-            else 
-            {
-              // Si aucun programme n'est terminé, Consigne défaut (Consigne_G)
-              cons_chaud = 60;  // 6°C
-            }
-          }      
-        }
-      }
-    }
-    Consigne = cons_chaud;
-
-
-    // modes dégradés
-    unsigned long mil = millis();
-    if ((mil - last_remote_heure_time > 61*60*1000) || (init_time<2))  // heure non mise a jour depuis 61 min
-    {
-      // Faire la moyenne des consignes
-      if (planning)
-      {
-        uint16_t cons=0;
-        uint8_t nb_cons=0;
-        for (uint8_t i = 0; i < NB_MAX_PGM; i++) 
-        {
-          // Si programme definis (non nul)
-          if (plan[i].ch_debut != 0 || plan[i].ch_fin != 0) 
-          {
-            cons += plan[i].ch_consigne;
-            cons += plan[i].ch_cons_apres;
-            nb_cons += 2;
-          }
-        }
-        if (nb_cons) cons_chaud = cons / nb_cons;  
-        else {
-          cons_chaud = 100;  // 10° par défaut si pas de programmes definis  
-        }
-        Consigne = cons_chaud;
-      }
-      err_Heure++;
-    } 
-        // pb Tint
-    if (mil - last_remote_Tint_time > 61*60*1000)  // Tint non mise a jour depuis 1 heure
-    {
-      // Utiliser Text : Definir un cycle marche-arret
-      if (mil - last_remote_Text_time > 61*60*1000)  // Text non mise a jour depuis 1 heure
-      {
-        // calcul du cycle en fonction de la consigne : consigne=10=>10%   consigne=20=>30%
-        cycle_chaud = (Consigne*2 - 100); 
-      }
-      else
-      {
-         // calcul du cycle en fonction de la consigne et de la Temp Ext : 12°=>-4%  8%=>+4%
-        cycle_chaud = (Consigne*2 - 100) - (Text-10)*20;
-      }
-      if (cycle_chaud < 50) cycle_chaud=50;
-      if (cycle_chaud > 500) cycle_chaud=500;
-      activ_cycle=1;
-    }
-
-    Serial.printf("regul:Text:%.1f Tint:%.1f cons1:%.1f cons2:%i\n\r", Text, Tint, Consigne, cons_chaud);
-    if (activ_cycle)
-      Serial.printf("Cycle chaudiere: %i valeur:%i", activ_cycle, cycle_chaud);
-
-    if (!activ_cycle)
-    {
-      if (mil - last_chaudiere_change > 10000) // Sécurité 10s
-      {
-        if (cons_chaud < Tint*10) // Arret chaudiere
-        {
-          digitalWrite(PIN_Chaudiere, LOW);  // DesActivation chaudiere
-          last_chaudiere_change = mil;
-          Serial.println("Régulation : Arrêt Chaudière (Consigne < Tint)");
-          if (chaudiere==1)  // chgt etat
-          {
-            milli_arret = mil;
-          }
-          chaudiere = 0; 
-        }
-        else 
-        {
-          digitalWrite(PIN_Chaudiere, HIGH);  // Activation chaudiere
-          last_chaudiere_change = mil;
-          Serial.println("Régulation : Marche Chaudière (Consigne >= Tint)");
-          if (chaudiere==0) // chgt etat
-          {
-            milli_marche = mil;
-          }
-          chaudiere = 1;
-        }
-      }
-    }
-    else  // cycle chaudiere
-    {
-        xTimerStop(xTimer_cycle_chaud,100);
-        chaudiere = 1;
-        milli_marche = mil;
-        digitalWrite(PIN_Chaudiere, HIGH);  // Activation chaudiere
-        last_chaudiere_change = mil;
-        Serial.println("Régulation : Cycle Marche Chaudière On");
-        xTimerChangePeriod(xTimer_cycle_chaud,(uint32_t)periode_cycle*60*(1000/portTICK_PERIOD_MS)*cycle_chaud/1000,100);
-        xTimerStart(xTimer_cycle_chaud,100);
-
-    }
-  }
-  #endif
-}
 
 // type 1
 uint8_t requete_Set_appli (String param, float valf) 
@@ -1025,90 +833,6 @@ uint8_t requete_Set_appli (String param, float valf)
           //preferences_nvs.putUChar("Cons", Consigne_G);
           res = 0;
       }
-      maj_etat_chaudiere_delai(15); // Mise à jour immédiate
-    }
-    if (param == "fo_jus") {
-       fo_jus = (uint16_t)round(valf);
-       Serial.printf("Forcage Horaire pendant: %i min\n", (uint16_t)fo_jus);
-       res = 0;
-       maj_etat_chaudiere_delai(15);
-    }
-
-    if (param == "RTint") {  // Non utilisé
-      res = 0;
-      Tint = valf;
-      last_remote_Tint_time = millis();
-      cpt24_Tint++;
-      tempI_moy24h += Tint;
-      Serial.printf("Réception RTint : %.2f°C\n", Tint);
-    }
-
-
-    if (param == "HG") 
-    {
-      if (valf)  // activation Hors gel
-      {
-        HG = 2;  // HG
-        Consigne = (float)Consigne_HG / 10;
-        //Ballon = 1;  // ballon eteint
-        //save_modbus(160, 0);
-        preferences_nvs.putUChar("HG", 2);
-        //preferences_nvs.putUChar("Bal", 1);
-        res = 0;
-      }
-      else
-      {
-        HG = 1;  // mode normal
-        Consigne = (float)Consigne_G / 10;
-        //Ballon = 2;  // ballon allumé
-        //save_modbus(160, 1);
-        preferences_nvs.putUChar("HG", 1);
-        //preferences_nvs.putUChar("Bal", 2);
-        res = 0;
-      }
-      maj_etat_chaudiere(); // Mise à jour immédiate
-      //Serial.printf("HG:%i valf:%.1f Consigne:%.1f\n", HG, valf, Consigne);
-    } 
-
-
-    // --- Gestion du Planning P0_0 à P2_4 ---
-    if (param.startsWith("P") && param.length() == 4 && param[2] == '_')
-    {
-      uint8_t i = param[1] - '0';
-      uint8_t f = param[3] - '0';
-      if (i < NB_MAX_PGM)
-      {
-        char key[10]; 
-        if (f == 0) {
-            plan[i].ch_debut = val;
-            sprintf(key, "P%d_deb", i);
-            preferences_nvs.putUChar(key, val);
-        }
-        else if (f == 1) {
-            plan[i].ch_fin = val;
-            sprintf(key, "P%d_fin", i);
-            preferences_nvs.putUChar(key, val);
-        }
-        else if (f == 2) {
-            plan[i].ch_type = val;
-            sprintf(key, "P%d_typ", i);
-            preferences_nvs.putUChar(key, val);
-        }
-        else if (f == 3) {
-            plan[i].ch_consigne = val;
-            sprintf(key, "P%d_con", i);
-            preferences_nvs.putUChar(key, val);
-        }
-        else if (f == 4) {
-            plan[i].ch_cons_apres = val;
-            sprintf(key, "P%d_apr", i);
-            preferences_nvs.putUChar(key, val);
-        }
-        
-        // Synchronisation avec STM32
-        res = 0;
-        maj_etat_chaudiere_delai(30); // Mise à jour après modif planning
-      }
     }
 
     if (param == "vbatt")
@@ -1120,109 +844,6 @@ uint8_t requete_Set_appli (String param, float valf)
       Serial.printf("Réception Vbatt Distante : %.2fV\n", Vbatt_Th);
     }
 
-    if (param == "MMC")
-    {
-      unsigned long mil_tmp = millis();
-      if (mil_tmp - last_chaudiere_change > 20000)  // min 20s
-      {
-        Serial.printf("MMC:%.2f\n\r", valf);
-        if (val==1)  // activation chaudiere
-        {
-          res=0;
-          Serial.println("MMC actif");
-          MMCh = 2;  // chaudiere active
-          preferences_nvs.putUChar("MMC", 2);
-          maj_etat_chaudiere(); // Mise à jour immédiate
-        }
-        if (val==0)  // arret chaudiere
-        {
-          res=0;
-          Serial.println("MMC inactif");
-          MMCh = 1;  // chaudiere éteinte
-          preferences_nvs.putUChar("MMC", 1);
-          maj_etat_chaudiere_delai(10); // Mise à jour 10 sec
-        }
-        if (res==0)       last_chaudiere_change = mil_tmp;
-      }
-    }
-
-    if (param == "planning") {
-      if  (valf >=0  && (round(valf) <2))
-      {
-        planning = (uint8_t)round(valf);
-        preferences_nvs.putUChar("Pla", planning);
-        cons_fixe = 1 - planning;
-        preferences_nvs.putUChar("Cof", cons_fixe);
-
-        Serial.printf("coche planning: %i\n", planning);
-        res = 0;
-        maj_etat_chaudiere_delai(20);
-      }
-    }
-    if (param == "vacances") {
-      if (valf >=0  && (round(valf) <2))
-      {
-        vacances = (uint8_t)round(valf);
-        preferences_nvs.putUChar("vac", vacances);
-        Serial.printf("coche vacances: %i\n", vacances);
-        res = 0;
-        maj_etat_chaudiere_delai(30);
-      }
-    }
-    if (param == "va_cons") {
-      if ((valf >= 4) && (valf <=23))
-      {
-        va_cons = (uint8_t)round(valf*10);
-        preferences_nvs.putUChar("VaCo", va_cons);
-        Serial.printf("Consigne vacances: %i\n", va_cons);
-        res = 0;
-        maj_etat_chaudiere_delai(20);
-      }
-    }
-    if (param == "va_date") {
-      if (valf >= 0 && valf <= 90)
-      {
-        lectureHeure();
-        va_date = (uint16_t)round(valf) + date_ac;
-        preferences_nvs.putUShort("VaDa", va_date);
-        Serial.printf("date fin vacances: %i\n", va_date);
-        res = 0;
-        maj_etat_chaudiere_delai(30);
-      }
-    }
-    if (param == "va_heure") {
-      if (valf >=0 &&  valf <= 144)
-      {
-        va_heure = (uint8_t)round(valf);
-        preferences_nvs.putUChar("VaHe", va_heure);
-        Serial.printf("heure fin vacances: %i\n", va_heure);
-        res = 0;
-        maj_etat_chaudiere_delai(30);
-      }
-    }
-    if (param == "cons_fixe") {
-      if  (valf >=0  && (round(valf) <2))
-      {
-        cons_fixe = (uint8_t)round(valf);
-        preferences_nvs.putUChar("Cof", cons_fixe);
-        planning = 1 - cons_fixe;
-        preferences_nvs.putUChar("Pla", planning);
-
-        Serial.printf("coche consigne fixe: %i\n", cons_fixe);
-        res = 0;
-        maj_etat_chaudiere_delai(30);
-      }
-    }
-    if (param == "co_fi") {
-      if ((valf >= 4) && (valf <= 23))
-      {
-        co_fi = (uint8_t)round(valf*10);
-        preferences_nvs.putUChar("CoFi", co_fi);
-        Serial.printf("consigne fixe: %i\n", co_fi);
-        res = 0;
-        maj_etat_chaudiere_delai(20);
-      }
-    }
 
   return res;
 }
@@ -1241,85 +862,6 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
   {
     res = 0;
     *valeur = Nb_jours_Batt_log;
-  }
-  if (reg == 11)  // registre 11 : consigne économie
-  {
-    res = 0;
-    *valeur = (float)Cons_eco / 10;
-  }
-
-  
-  if (reg == 12)  // registre 12 : Kp
-  {
-    res = 0;
-    *valeur = Kp;
-  }
-  if (reg == 13)  // registre 13 : Ki
-  {
-    res = 0;
-    *valeur = Ki;
-  }
-  if (reg == 14)  // registre 14 : Kd
-  {
-    res = 0;
-    *valeur = Kd;
-  }
-  if (reg == 15)  // registre 15 : Loi d'eau Point 1
-  {
-    res = 0;
-    *valeur = Pt1;
-  }
-  if (reg == 16)  // registre 16 : Loi d'eau Valeur au Point 1
-  {
-    res = 0;
-    *valeur = Pt1Val;
-  }
-  if (reg == 17)  // registre 17 : Loi d'eau Point 2
-  {
-    res = 0;
-    *valeur = Pt2;
-  }
-  if (reg == 18)  // registre 18 : Loi d'eau Valeur au Point 2
-  {
-    res = 0;
-    *valeur = Pt2Val;
-  }
-  if (reg == 19)  // registre 19 : Loi d'eau Tint : ecart a 20°C
-  {
-    res = 0;
-    *valeur = loi_eau_Tint;
-  }
-  if (reg == 21)  // registre 21 : valeur PID
-  {
-    res = 0;
-    *valeur = Output;
-  }
-  if (reg == 22)  // registre 22 : min_max_pid
-  {
-    res = 0;
-    *valeur = min_max_pid;
-  }
-  if (reg == 23)  // registre 23 : Teau min
-  {
-    res = 0;
-    *valeur = TPacMin;
-  }
-  if (reg == 24)  // registre 24 : Teau max
-  {
-    res = 0;
-    *valeur = TPacMax;
-  }
-  if (reg == 12)  // registre 12 : temps eveillé (sec) (sonde)
-  {
-    res = 0;
-    *valeur = prolong_veille;
-  }
-
-
-  if (reg == 40)  // registre 40 : Mode
-  {
-    res = 0;
-    *valeur = Mode;
   }
   
   if (reg == 41)  // registre 41 : canal WiFi actuel
@@ -1368,136 +910,6 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
     }
   }
 
-  if (param == 11)  // registre 11 : consine eco
-  {
-    res = 0;
-    if ((valeurf >= 2) && (valeurf <= 20))  // 2 a 20°C
-    {
-      Cons_eco = (uint8_t)(valeurf*10);
-      preferences_nvs.putUChar("CoEc", Cons_eco);  
-    }
-  }
-
-  if (param == 12)  // registre 12 : Kp
-  {
-    if ((valeurf) && (valeurf < 2)) {
-      res = 0;
-      Kp = valeurf; //(float)valeur / 100;
-      myPID.SetTunings(Kp, Ki, Kd);
-      preferences_nvs.putUShort("Kp", (uint16_t)(valeurf*100));
-    }
-  }
-  if (param == 13)  // registre 13 : Ki
-  {
-    res = 0;
-    Ki = valeurf;
-    myPID.SetTunings(Kp, Ki, Kd);
-    preferences_nvs.putUShort("Ki", (uint16_t)(valeurf*10000));
-  }
-  if (param == 14)  // registre 14 : Kd
-  {
-    res = 0;
-    Kd = valeurf;
-    myPID.SetTunings(Kp, Ki, Kd);
-    preferences_nvs.putUShort("Kd", (uint16_t)(valeurf*10000));
-  }
-
-  if (param == 15)  // registre 15 : Loi d'eau Point 1
-  {
-    uint8_t err_loi_eau = 0;
-    int8_t Pt1_prov = valeur - 30;
-    if ((Pt1_prov < -10) || (Pt1_prov > 15)) err_loi_eau = 1;        // -10°C à 15°C
-    if ((Pt1_prov > Pt2) || (Pt2 - Pt1_prov < 10)) err_loi_eau = 1;  // au moins 10°C d'écart
-    if (!err_loi_eau) {
-      res = 0;
-      Pt1 = valeur - 30;
-      preferences_nvs.putUChar("Pt1", valeur);
-    }
-  }
-
-  if (param == 16)  // registre 16 : Loi d'eau Valeur au Point 1
-  {
-    uint8_t err_loi_eau = 0;
-    if ((valeur < Pt2Val) || (valeur - Pt2Val < 5)) err_loi_eau = 1;  // au moins 5° d'écart
-    if (!err_loi_eau) {
-      res = 0;
-      Pt1Val = valeur;
-      preferences_nvs.putUChar("Pt1Val", valeur);
-    }
-  }
-  if (param == 17)  // registre 17 : Loi d'eau Point 2
-  {
-    uint8_t err_loi_eau = 0;
-    if ((valeur < 10) || (valeur > 30)) err_loi_eau = 1;         // 10°C à 30°C
-    if ((Pt1 > valeur) || (valeur - Pt1 < 10)) err_loi_eau = 1;  // au moins 10°C d'écart
-    if (!err_loi_eau) {
-      res = 0;
-      Pt2 = valeur;
-      preferences_nvs.putUChar("Pt2", valeur);
-    }
-  }
-
-  if (param == 18)  // registre 18 : Loi d'eau Valeur au Point 2
-  {
-    uint8_t err_loi_eau = 0;
-    if ((Pt1Val < valeur) || (Pt1Val - valeur < 5)) err_loi_eau = 1;  // au moins 5° d'écart
-    if (!err_loi_eau) {
-      res = 0;
-      Pt2Val = valeur;
-      preferences_nvs.putUChar("Pt2Val", valeur);
-    }
-  }
-  if (param == 19)  // registre 19 : loi eau Tint , ecart a 20°C
-    if ((valeurf >= 0.5) && (valeurf <2.5))  
-    {
-      res = 0;
-      loi_eau_Tint = valeurf;
-      preferences_nvs.putUChar("LoiTint", (uint8_t)(loi_eau_Tint*100));
-    }
-
-
-  if (param == 22)  // registre 22 : Min_max pid
-  {
-    if ((valeur >= 2) && (valeur <= 10)) {
-      res = 0;
-      min_max_pid = valeur;
-      preferences_nvs.putUChar("MPid", min_max_pid);
-    }
-  }
-  if (param == 23)  // registre 23 : TPACmin
-  {
-    if ((valeur >= 5) && (valeur <= 30) && (valeur < TPacMax)) {
-      res = 0;
-      TPacMin = valeur;
-      preferences_nvs.putUChar("Tmin", TPacMin);
-    }
-  }
-  if (param == 24)  // registre 24 : TPAC max
-  {
-    if ((valeur >= 15) && (valeur <= 40) && (TPacMin < valeur)) {
-      res = 0;
-      TPacMax = valeur;
-      preferences_nvs.putUChar("Tmax", TPacMax);
-    }
-  }
-
-  if (param == 12)  // registre 12 : prolong veille (sonde)
-  {
-    if (valeur >= 10) {
-      res = 0;
-      prolong_veille = valeur;
-      preferences_nvs.putUShort("PVei", prolong_veille);
-    }
-  }
-
-  if (param == 40)  // registre 40 : mode
-  {
-    if ((valeur) && (valeur <= 3)) {
-      res = 0;
-      Mode = valeur;
-      preferences_nvs.putUChar("Mode", Mode);
-    }
-  }
   if (param == 41)  // registre 41 : last_wifi_channel
   {
     if ((valeur) && (valeur <= 13))
@@ -1708,7 +1120,13 @@ uint8_t fetch_internet_temp() {
     int httpCode = http.GET();
     if (httpCode == 200) {
       String payload = http.getString();
+
+      // pour éviter les warnings de la librairie ArduinoJson sur les anciennes versions de l'ESP32
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       DynamicJsonDocument doc(512);
+      #pragma GCC diagnostic pop
+
       DeserializationError error = deserializeJson(doc, payload);
       
       if (!error) {
@@ -1736,25 +1154,16 @@ uint8_t fetch_internet_temp() {
   return res;
 }
 
-void event_mesure_temp()  // toutes les 15 minutes : modif allumage chaudiere
+void event_cycle()  // toutes les 15 minutes 
 {
-  uint8_t i;
 
   #ifdef ESP_CHAUDIERE
     // --- MODE CHAUDIERE ---
     // Récupération de la température extérieure par internet
     fetch_internet_temp();
 
-    // Tint est mise à jour par les requêtes distantes (RTint)
     
-    // activation ou desactivation chaudiere
-    if (!xTimerIsTimerActive(xTimer_activ_chaud))  // si timer de commande n'est pas actif
-      maj_etat_chaudiere();
-
-
-    // enregistrement valeur pour graphique
-    chaud_marche += chaudiere;
-
+    uint8_t i;
     compteur_graph++;
     if (compteur_graph >= skip_graph)  // 1 valeur sur x
     {
@@ -1766,20 +1175,15 @@ void event_mesure_temp()  // toutes les 15 minutes : modif allumage chaudiere
       }
       graphique[0][0] = round(Tint * 10);
       graphique[0][1] = round(Text * 10);
-
-      if (activ_cycle)
-      {
-        graphique[0][2] = cycle_chaud/17 + 150;   //0=>150  500=>180
-        cout_moy24h += cycle_chaud;  // 50 à 500
-      }
-      else   
-      {
-        graphique[0][2] = (chaud_marche*20)/skip_graph+140;  // 14:arret 16:marche
-        cout_moy24h += (chaud_marche*12)/skip_graph*83;  // 1000
-      }
-      cpt24_Cout++;
-      chaud_marche = 0;
+      graphique[0][2] = compteur_detection*10+1;  // A partie de 1 pour éviter les valeurs nulles dans le graphique
+      compteur_detection = 0;
     }
+    tempI_moy24h += Tint;
+    cpt24_Tint++;
+    tempE_moy24h += Text;
+    cpt24_Text++;
+    PIR_24h += compteur_detection;
+    cpt24_PIR++;
 
     // cout moyen
   #endif

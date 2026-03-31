@@ -7,7 +7,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="apple-mobile-web-app-capable" content="no">
 <meta name="mobile-web-app-capable" content="no">
-<title>Chaudiere</title>
+<title>Detection PIR</title>
 <style>
   body {font-family: Arial,Helvetica,sans-serif;background: #181818;color: #EFEFEF;font-size: 16px}
   section.main { display: flex }
@@ -117,7 +117,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 </style>
 </head>
 <body>
-    <h2>Chaudiere</h2>
+    <h2>Detection PIR</h2>
     <h3></h3>
     <section class="main">
       <div id="logo">
@@ -129,20 +129,12 @@ const char index_html[] PROGMEM = R"rawliteral(
           <nav id="menu">
 
             <div class="input-group">
-                <label for="temp">Température intérieure :</label>
+                <label for="PIR_D">Nb Detections :</label>
                 <div class="text">
-                    <span id="Tint" class="default-action"></span>&deg;C&nbsp&nbsp&nbsp&nbsp
+                    <span id="PIR_D" class="default-action"></span>
                 </div>
             </div>
 
-            <div class="input-group" id="Tint-mess-group">
-              <label for="LRTT"></label>
-              <div class="text">
-                <span class="alert-icon">⚠️</span>
-                Sonde absente depuis
-                <span id="LRTT" class="default-action"></span> h
-              </div>
-            </div>
 
             <div class="input-group" id="batS-group">
               <label for="batS"></label>
@@ -154,25 +146,6 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
 
 
-            <div class="input-group" id="consigne-group">
-                <label for="consigne">Consigne</label>
-                <input id="consigne" type="text" size="6" class="default-action">°C
-                <span id="etat_chaud" class="default-action visibi" style="font-size: 24px; display: none; margin-left: 60px;">&#128293;</span>
-            </div>
-
-
-            <div class="input-group" id="jusque-group">
-                <label for="fo_jus">
-                    <span class="forcage-label">Forçage consigne</span> pendant :
-                </label> 
-                <div class="text">
-                    <span id="fo_jus" class="default-action"></span>&nbsp&nbspmin
-                </div>
-                <button id="fo_cancel" class="cancel-btn" title="Annuler le forçage">
-                   ✕
-                </button>                
-            </div>
-
             <div class="input-group">
                 <label for="Text">Temp Ext:</label>
                 <div class="text">
@@ -181,79 +154,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
 
 
-            <div class="input-group" id="PL-group">
-              <label for="planning">Programme</label>
-              <div class="switch" style="margin-left: 25px;">
-                  <input id="planning" type="checkbox"  class="default-action">
-                  <label class="slider" for="planning"></label>
-              </div>
-              <div class="default-action" style="margin-left: 10px;">
-                <div class="container">
-                  <div id="planning_led" class="default-action" style="margin-left: 2px;"></div>
-                </div>
-              </div>                  
-            </div>
-
-            <div class="input-group inline-group" id="CS-group">
-              <label for="cons_fixe">Consigne fixe</label>
-              <div class="switch">
-                  <input id="cons_fixe" type="checkbox"  class="default-action">
-                  <label class="slider" for="cons_fixe"></label>
-              </div>
-              <div class="default-action">
-                <div class="container">
-                  <div id="cons_fixe_led" class="default-action" ></div>
-                </div>
-              </div>                  
-
-              <div class="input-group" id="co_fi-group">
-                <label for="co_fi"></label>
-                <div class="text">
-                  <input id="co_fi" type="text" minlength="1" maxlength="4" size="4"
-                        class="default-action"> °C
-                </div>
-              </div>
-            </div>
-
-            <div class="input2-group " id="vac-group">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <label for="vacances">Vacances</label>
-                  <div class="switch" style="margin-left:40px;">
-                      <input id="vacances" type="checkbox"  class="default-action">
-                      <label class="slider" for="vacances"></label>
-                  </div>
-                  <div id="vacances_led" class="default-action" style="margin-left: 2px;"></div>
-              </div>          
-
-              <div id="vac-d-group">
-                <div class="input-group">
-                  <label for="va_cons">Consigne vacances :</label>
-                  <div class="number">
-                    <input id="va_cons" type="text" minlength="1" maxlength="4" size="4" class="default-action"> °C
-                  </div>
-                </div>
-
-                <div class="input-group">
-                  <label for="va_date">Date fin :</label>
-                  <div class="text">
-                    <div id="va_date_value" style="width: 30px; display: inline-block;"></div>
-                    <input id="va_date" type="range" min="0" max="30" value="0"
-                          class="default-action">
-                    &nbsp;jours
-                  </div>
-                </div>
-
-                <div class="input-group">
-                  <label for="va_heure">Heure fin :</label>
-                  <div class="number">
-                    <input id="va_heure" type="text" size="6" class="default-action"> h
-                  </div>
-                </div>
-
-              </div>
-            </div>
-
-            <p>Graphique Temperature : </p>
+            <p>Graphique Temp-Detections : </p>
             <canvas id = "schema" height="195" width="300" style="border:1px solid" class="graph-group">
               Votre navigateur ne supporte pas la balise canvas
             </canvas>

@@ -5,22 +5,10 @@ TODO :
 A compiler pour une firebeetle esp32-C6 ou uPesy vroom
 Avantages Platformio : Ifdef, intellisense, temps compil, backtrace
 
-v1.11 03/2026 Bug Text, getlocaltime timeout, pin port série, pullup rtc_gpio_Veille, Cout_Veille
-v1.10 03/2026 transfert Platformio
-v1.9 03/2026 heure d'été, marche/arret depuis, 
-v1.8 02/2026 PPE prochaine periode, rechargement consigne apres annul forcage,
-             graphique cout,slide maj, log24h, vbatt, bug programme, icone flamme
-             pin 3 (ok boot), bug init cpt_cycle_batt, bug vacances
-v1.7 02/2026 qq bugs, optimisation taille site_web, consigne vacances
-v1.6 02/2026 Firebeetle, sonde(mode dégradés), Chaud(Batt_sonde_low, freq log batt)
-v1.5 02/2026 esp_sonde et eps_chaudiere ok
-v1.4 02/2026 esp_now
-v1.3 02/2026 OTA, ajout esp32_thermometre, mesure Text par internet
-v1.2 12/2025 1ere version ops, modif site web, compil ok
-v1.1 12/2025 copie de PAC_Catalane v1.16
+v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
 
-Graphique 1 : par cycle : fct chaud(rouge 14à16), temp int(vert), temp ext(bleu)
-Graphique 2 : par 24h :  double du %fct chaud (rouge) 19%->55, Temp int (vert) Temp ext(bleu)
+Graphique 1 : par cycle : G1:temp_int(vert) G2:temp ext(bleu) G3:Nbdetect par cycle
+Graphique 2 : par 24h :   G1:Temp int(vert) G2:temp_ext(bleu) G3:Nb detect/24h
 
 Interrogation des données par la liaison série (recep_message) : 2-1 (type1, reg1)
 
@@ -53,7 +41,7 @@ Configuration des options de programmation :
 // Debug Level from 0 to 4
 #define _ETHERNET_WEBSERVER_LOGLEVEL_ 1
 
-#define temps_boucle_loop  30   // secondes
+#define temps_boucle_loop  2   // secondes
 #define attente_init     10     // 10 secondes avant de demasquer les entrées
 #define attente_mise_heure  30  // 30 secondes apres le temps d'init ci-dessus pour verifier/maj l'heure
 
@@ -89,7 +77,7 @@ static bool eth_connected = false;
 #include "site_web.h"
 #include "time.h"
 #include <base64.h>  // Nécessaire pour encoder les données binaires
-//#include <ArduinoOTA.h>  // nécessaire pour OTA
+#include <ArduinoOTA.h>  // nécessaire pour OTA
 #include <Wire.h>
 #include "ClosedCube_HDC1080.h"
 #include "driver/rtc_io.h"
@@ -194,6 +182,7 @@ char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
 
 uint16_t test1=0;
 uint16_t test2=0;
+volatile bool debounceFlag = false;
 
 // etat d'un system externe commandable par Pin_on et pin_off  : 0 éteint, 1:allumé
 uint8_t systeme_marche=0;
@@ -299,8 +288,6 @@ TimerHandle_t xTimer_24H;
 TimerHandle_t xTimer_Cycle;
 //TimerHandle_t xTimer_Compresseur;
 TimerHandle_t xTimer_Securite;
-TimerHandle_t xTimer_activ_chaud;
-TimerHandle_t xTimer_cycle_chaud;
 
 
 
@@ -317,21 +304,21 @@ uint8_t etat_connect_ethernet = 0;
 AsyncWebServer server(80);
 
 uint8_t cycle24h;
-float  tempI_moy24h=0, tempE_moy24h=0, cout_moy24h=0;
-uint8_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Cout=0;
-uint8_t TextV=0, CoutV=0;   
+float  tempI_moy24h=0, tempE_moy24h=0, PIR_24h=0;
+uint8_t cpt24_Tint=0, cpt24_Text=0,  cpt24_PIR=0;
+uint8_t TextV=0, PIRV=0;   
 
-#define DEBOUNCE_INTERVAL 300  // Temps anti-rebond en ms
-#define VALIDATION_COUNT 10  // Nombre de lectures consécutives pour valider un changement
+#define DEBOUNCE_INTERVAL 100  // Temps anti-rebond en ms
+#define VALIDATION_COUNT 5  // Nombre de lectures consécutives pour valider un changement
 volatile unsigned long lastInterruptTime = 0; 
 
 TimerHandle_t debounceTimer;
-#define BTN_COUNT 1  // Nombre de boutons
+#define BTN_COUNT 2  // Nombre de boutons
 volatile int lastButtonState[BTN_COUNT] = {HIGH};  // États précédents
 volatile int stableButtonState[BTN_COUNT] = {HIGH}; // États stables validés
 volatile int pressCounter[BTN_COUNT] = {0}; // Compteurs de validation
 
-const int BTN_PIN[BTN_COUNT] = {14};  // Pins des boutons
+const int BTN_PIN[BTN_COUNT] = {14, 32};  // Pins des boutons
 
 
 #define configASSERT_CODE( x, code ) if( ( x ) == 0 ) { \
@@ -567,21 +554,10 @@ void vTimerWatchdogCallback(TimerHandle_t xTimer)
     }
 }
 
-// timeout pour activ chaudiere
+// timeout pour chaque cycle
 void vTimerMarChaudCallback(TimerHandle_t xTimer)
 {
-  systeme_eve_t evt = { EVENT_ACTIV_CHAUD, 0};
-  if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
-    {
-      if (erreur_queue<5) num_err_queue[erreur_queue]=5;
-      erreur_queue++;
-    }
-}
-
-// timeout pour cycle chaudiere
-void vTimerCycleChaudCallback(TimerHandle_t xTimer)
-{
-  systeme_eve_t evt = { EVENT_CYCLE_CHAUD, 0};
+  systeme_eve_t evt = { EVENT_ACTIV_CYCLE, 0};
   if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
     {
       if (erreur_queue<5) num_err_queue[erreur_queue]=5;
@@ -793,25 +769,18 @@ void taskHandler(void *parameter) {
                   }                  
                   break;
                 }
-                case EVENT_ACTIV_CHAUD: {
-                  maj_etat_chaudiere();
-                  break;
-                }
-                case EVENT_CYCLE_CHAUD: { 
-                  chaudiere = 0; 
-                  milli_arret = millis();
-                  digitalWrite(PIN_Chaudiere, LOW);  // DesActivation chaudiere
-                  Serial.println("Régulation : Arrêt cycle Chaudière ");
+                case EVENT_ACTIV_CYCLE: {
+                  maj_etat_cycle();
                   break;
                 }
  
-                case EVENT_GPIO_OFF:  // 0:Defaut secteur, 1:intrusion, 2:autoprotect, 3:marche/arret
-                    //Serial.printf("GPIO:defaut secteur =>timer:%i\n\r", evt.data);
+                case EVENT_GPIO_OFF:  
+                    Serial.printf("GPIO:off:%i\n\r", evt.data);
                     appli_event_off(evt);
                     break;
 
                 case EVENT_GPIO_ON:  // 0:reprise secteur, 1:fin intrusion, 2:autoprotect, 3:marche/arret
-                    //Serial.printf("GPIO:defaut secteur =>timer:%i\n\r", evt.data);
+                    Serial.printf("GPIO:on:%i\n\r", evt.data);
                     appli_event_on(evt);
                     break;
 
@@ -967,27 +936,24 @@ void taskHandler(void *parameter) {
                   err_Heure=0;
 
                   // graphique des temperatures quotidiennes
-                  uint8_t tempI=1, tempE=1, Cout=1;
+                  uint8_t tempI=1, tempE=1, PIR=1;
                   if (cpt24_Tint)  tempI = (uint8_t)(tempI_moy24h/cpt24_Tint*10);
                   if (cpt24_Text)  tempE = (uint8_t)(tempE_moy24h/cpt24_Text*10);
-                  uint16_t coutM = 1;
-                  if (cpt24_Cout) coutM = cout_moy24h/cpt24_Cout/3;
-                  if (coutM>=255) coutM=255;
-                  Cout = (uint8_t)(coutM);  // 1000 -> max 333
+                  if (cpt24_PIR) PIR = (uint8_t)(PIR_24h/cpt24_PIR*10);
                   if (!tempI) tempI=1;  // permet d'afficher quand meme le point sur le graphique
                   if (!tempE) tempE=1;  // permet d'afficher quand meme le point sur le graphique
-                  if (!Cout) Cout=1;  // permet d'afficher quand meme le point sur le graphique
+                  if (!PIR) PIR=1;  // permet d'afficher quand meme le point sur le graphique
                   TextV = tempE;
-                  CoutV = Cout;
+                  PIRV = PIR;
 
                   //Serial.printf("Temp24h I:%.2f %i E:%.2f %i C:%.2f %i\n\r", tempI_moy24h, cpt24_Tint, tempE_moy24h, cpt24_Text, cout_moy24h, cpt24_Cout);
 
                   tempI_moy24h=0;
                   tempE_moy24h=0;
-                  cout_moy24h=0;
+                  PIR_24h=0;
                   cpt24_Tint=0;
                   cpt24_Text=0;
-                  cpt24_Cout=0;
+                  cpt24_PIR=0;
 
                   uint8_t i;
                   for (i = NB_Val_Graph - 1; i; i--) {
@@ -997,13 +963,13 @@ void taskHandler(void *parameter) {
                   }
                   graphique[0][3] = tempI;
                   graphique[0][4] = tempE;
-                  graphique[0][5] = Cout;  
+                  graphique[0][5] = PIR;  
 
                   break;
                 }
 
                 case EVENT_CYCLE:
-                  event_mesure_temp();
+                  event_cycle();
                   break;
 
                 case EVENT_CYCLE_Compresseur:
@@ -1173,12 +1139,14 @@ void setup()
 
   // ------  Configuration des PIN sorties       -------------------------------
 
-  pinMode(PIN_Chaudiere, OUTPUT);
+  pinMode(PIN_OUT0, OUTPUT);
   // Configurer l'interruption GPIO sur GPIO 18 (ex: bouton poussoir)
   //pinMode(18, INPUT_PULLUP);
   //attachInterrupt(digitalPinToInterrupt(18), onGPIO, FALLING);
     pinMode(BTN_PIN[0], INPUT_PULLUP);
-    pinMode(PIN_REVEIL, INPUT_PULLUP); // Thermometre : Bouton de réveil / Wifi_AP au démarrage
+    pinMode(BTN_PIN[1], INPUT_PULLUP);
+    pinMode(PIN_REVEIL, INPUT_PULLUP); // Bouton de réveil / Wifi_AP au démarrage
+    pinMode(PIN_REVEIL2, INPUT_PULLUP); // Bouton de réveil : Detecteur
     /*pinMode(BTN_PIN[1], INPUT_PULLUP);
     pinMode(BTN_PIN[2], INPUT_PULLUP);
     pinMode(BTN_PIN[3], INPUT_PULLUP);
@@ -1450,13 +1418,7 @@ void setup()
   xTimer_Watchdog= xTimerCreate ("Watchdog", (uint32_t)WDT_TIMEOUT*(300/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWatchdogCallback);
   if (xTimer_Watchdog == NULL)  Serial.println("Erreur : timer xTimer_Watchdog non créé !");
 
-  // Timer de Délai d'attente pour activation chaudiere
-  xTimer_activ_chaud= xTimerCreate ("marche_chaud", (uint32_t)1*(300/portTICK_PERIOD_MS), pdFALSE, (void *) 0, vTimerMarChaudCallback);
-  if (xTimer_activ_chaud == NULL)  Serial.println("Erreur : timer xTimer_marche_chaudiere non créé !");
 
-  // Timer de cycle chaudiere
-  xTimer_cycle_chaud= xTimerCreate ("cycle_chaud", (uint32_t)1*(300/portTICK_PERIOD_MS), pdFALSE, (void *) 0, vTimerCycleChaudCallback);
-  if (xTimer_cycle_chaud == NULL)  Serial.println("Erreur : timer xTimer_cycle_chaudiere non créé !");
 
   #ifdef WatchDog
     esp_task_wdt_reset();
@@ -1620,10 +1582,13 @@ void setup()
       if (ArduinoOTA.getCommand() == U_FLASH) type = "sketch";
       else type = "filesystem";
       Serial.println("Mise à jour OTA: " + type);
+      //WiFi.setSleep(false);  // accelere l'ota
     });
 
     ArduinoOTA.onEnd([]() {
       Serial.println("\nFin");
+      //WiFi.setSleep(true); 
+
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -1639,6 +1604,7 @@ void setup()
       else if (error == OTA_END_ERROR) Serial.println("End Failed");
     });
 
+    //WiFi.setTxPower(WIFI_POWER_19_5dBm); // puissance max
     ArduinoOTA.begin();
     Serial.println("OTA prêt");
   #endif  // fin OTA
@@ -2735,7 +2701,7 @@ uint8_t requete_SetReg(int param, float valeurf)
 
 
 // activation de 2 PIn pour allumage et extinction
-void systeme_activ(uint8_t ordre) {
+/*void systeme_activ(uint8_t ordre) {
   if (ordre == 1) {
     digitalWrite(PIN_on, HIGH);  // Allume contact : appuie 0,5 seconde
     delay(500);
@@ -2747,7 +2713,7 @@ void systeme_activ(uint8_t ordre) {
     digitalWrite(PIN_off, LOW);
     systeme_marche = 0;
   }
-}
+}*/
 
 // type=0:tout  type=1:maj uniquement (sans tableaux)
 void requete_status(char *json_response, uint8_t socket, uint8_t type)
@@ -2827,31 +2793,8 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"periode_cycle\":%d,", periode_cycle);
   p += sprintf(p, "\"PPE\":%i,", Proch_periode);
 
-  p += sprintf(p, "\"Tint\":%.1f,", Tint);
   p += sprintf(p, "\"Text\":%.1f,", Text);
 
-  uint8_t Cons = (uint8_t)Consigne;
-  if (fo_jus) Cons = fo_co;
-  p += sprintf(p, "\"consigne\":%i,", Cons);
-
-  p += sprintf(p, "\"fo_jus\":%i,", fo_jus);
-  p += sprintf(p, "\"planning\":%i,", planning);
-
-  p += sprintf(p, "\"vacances\":%i,", vacances);
-  p += sprintf(p, "\"va_cons\":%i,", va_cons);
-  uint8_t va_date8 = 1;
-  if (vacances) va_date8 = va_date-date_ac;
-  else va_date = date_ac+1;
-  if (va_date8 > 30)  va_date8 = 30;
-  p += sprintf(p, "\"va_date\":%i,", va_date8);
-  p += sprintf(p, "\"va_heure\":%i,", va_heure);
-
-  p += sprintf(p, "\"cons_fixe\":%i,", cons_fixe);
-  p += sprintf(p, "\"co_fi\":%i,", co_fi);
-
-  p += sprintf(p, "\"cy_act\":%i,", activ_cycle);
-  p += sprintf(p, "\"cy_cha\":%i,", cycle_chaud);
-  p += sprintf(p, "\"etat_chaud\":%i,", chaudiere);
 
   uint8_t batSI = 0;
   //Vbatt_Th = 3.12;
@@ -2863,57 +2806,15 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"batSI\":%i,", batSI);
   p += sprintf(p, "\"batS\":%.2f,", batS);
 
-  p += sprintf(p, "\"Kp\":%.2f,", Kp);
-  p += sprintf(p, "\"Ki\":%.4f,", Ki);
-  p += sprintf(p, "\"Kd\":%.4f,", Kd);
-  p += sprintf(p, "\"HG\":%d,", HG - 1);
-  p += sprintf(p, "\"Tloi\":%.1f,", T_loi_eau);
-  p += sprintf(p, "\"Tobj\":%.1f,", T_obj);
-  p += sprintf(p, "\"Output\":%.3f,", Output);
-  p += sprintf(p, "\"MMC\":%i,", MMCh-1);
-  uint16_t last_temp_time = (mill - last_remote_Tint_time)/1000/60;  // temps en minutes
-  p += sprintf(p, "\"LRTT\":%i,", last_temp_time);
-
-  uint16_t dureeF, dureeA;
-  if (chaudiere) // chaudiere en marche
-  {
-    dureeF = (mill - milli_marche)/60000;
-    dureeA = (milli_marche - milli_arret) / 60000;
-  }
-  else // chaudiere à l'arret
-  {
-    dureeA = (mill - milli_arret)/60000;
-    dureeF = (milli_arret - milli_marche) / 60000;
-  }
-  p += sprintf(p, "\"DerFct\":%i,", dureeF);
-  p += sprintf(p, "\"DerFin\":%i,", dureeA);
-
-  p += sprintf(p, "\"TextV\":%i,", TextV);
-  p += sprintf(p, "\"CoutV\":%i,", CoutV);
-
-  uint8_t i;
-  // --- Ajout des paramètres de planning (3 programmes maximum) ---
-  for (i = 0; i < NB_MAX_PGM; i++) {
-    // Calcul de l'espace restant dans le buffer MAX_DUMP
-    int remaining = MAX_DUMP - (p - json_response) - 100;
-    if (remaining < 60) break; // Sécurité si le buffer est presque plein
-
-    // Envoi sous forme compacte : "P0":"debut fin type consigne cons_apres"
-    int n = snprintf(p, remaining, "\"P%d\":\"%u %u %u %u %u\",", 
-                     i, 
-                     plan[i].ch_debut, 
-                     plan[i].ch_fin, 
-                     plan[i].ch_type, 
-                     plan[i].ch_consigne, 
-                     plan[i].ch_cons_apres);
-    if (n > 0 && n < remaining) p += n;
-  }
+  p += sprintf(p, "\"PIR_D\":%i,", compteur_detection); // derniere 15min
+  p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
+  p += sprintf(p, "\"TextV\":%.1f,", TextV);  // Temp ext de la veille
   
   // Tableaux : E(erreurs) T(temp)
   if (!type)  // pas d'envoi des graphiques si type=1(maj)
   {
     // Nota: les 0 sont sautés
-    uint8_t j;  // 10 car par valeur => 1000 car par graphique
+    uint8_t i,j;  // 10 car par valeur => 1000 car par graphique
     for (j = 0; j < NB_Graphique; j++) {
       // valeurs de temperature
       for (i = 0; i < NB_Val_Graph; i++) {
@@ -2932,6 +2833,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   }
 
   // Tableaux : log erreurs
+  uint8_t i;
   for (i = 0; i < Nb_erreurs; i++) {
     if (erreur_code[i]) {
       int remaining = MAX_DUMP - (p - json_response) -2;
@@ -3217,24 +3119,25 @@ void traitement_rx(UartMessage_t * mess)
 void debounceCallback(TimerHandle_t xTimer)
 {
     bool needRestart = false;
+    //debounceFlag = true;
 
     for (int i = 0; i < BTN_COUNT; i++) {
         int buttonState = digitalRead(BTN_PIN[i]);  // Lire la pin actuelle
 
         // Incrémenter/décrémenter le compteur en fonction de l'état lu
         if (buttonState == LOW) {
-            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i] = pressCounter[i]+1;
+            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i]++;
         } else {
-            if (pressCounter[i] > 0) pressCounter[i] = pressCounter[i]-1;
+            if (pressCounter[i] > 0) pressCounter[i]--;
         }
 
         // Vérification si l'état a changé et atteint un seuil
         if (pressCounter[i] == VALIDATION_COUNT && stableButtonState[i] != LOW) {
             stableButtonState[i] = LOW;
-            Serial.printf("Btn %d On !\n", i);
+            //Serial.printf("Btn %d On !\n", i); // peut planter
             if (!init_masquage) { // masquage les 30 premières secondes
               systeme_eve_t evt = { EVENT_GPIO_ON, (uint32_t)i};
-              if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
+              if (xQueueSend(eventQueue, &evt, 0) != pdTRUE) 
               {
                 if (erreur_queue<5) num_err_queue[erreur_queue]=10;
                 erreur_queue++;
@@ -3244,10 +3147,10 @@ void debounceCallback(TimerHandle_t xTimer)
         else if (pressCounter[i] == 0 && stableButtonState[i] != HIGH)
         {
             stableButtonState[i] = HIGH;
-            Serial.printf("Btn %d off !\n", i);
+            //Serial.printf("Btn %d off00 !\n", i);
             if (!init_masquage) { // masquage les 30 premières secondes
               systeme_eve_t evt = { EVENT_GPIO_OFF, (uint32_t)i };
-              if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
+              if (xQueueSend(eventQueue, &evt, 0) != pdTRUE) 
               {
                 if (erreur_queue<5) num_err_queue[erreur_queue]=11;
                 erreur_queue++;
@@ -3563,6 +3466,11 @@ void loop()
   #ifdef WatchDog
     esp_task_wdt_reset();
   #endif
+
+if (debounceFlag) {
+    debounceFlag = false;
+    //Serial.println("Debounce timer callback");
+  }
 
   //Serial.printf("PIN_4 state = %d\n", digitalRead(PIN_REVEIL));
 

@@ -26,6 +26,7 @@
 
 #ifdef ESP_CHAUDIERE  // Chaudiere
   #define ESP32_uPesy
+  #define OTA
   //#define ESP32_Fire2
   #define MODE_Wifi  // Wifi sinon Ethernet
   #define Sans_websocket
@@ -90,12 +91,10 @@ typedef struct {
 #ifdef MODE_WT32  // WT32_Eth01
 // const int PIN_Tint = 11;   // GPIO IN1 Temp interieure DS18B20
 const int PIN_Tint22 = 5;  // GPIO IN1 Temp interieure DHT22
-const int PIN_PAC = 4;     // GPIO OUT PAC PWM
 const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
 #else                      // ESP32_DevKit
 // const int PIN_Tint = 13;  Défini dans le fichier appli.ino
 const int PIN_Tint22 = 5;  // GPIO IN1 Temp interieure DHT22
-const int PIN_PAC = 4;     //  OUT PAC - PWM  40kOhm+100nF(Fc=40Hz) et PWM=40khz
 #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
 
 // Pin Reveil
@@ -107,7 +106,50 @@ const int PIN_PAC = 4;     //  OUT PAC - PWM  40kOhm+100nF(Fc=40Hz) et PWM=40khz
 #endif
 #ifdef ESP32_uPesy
   #define PIN_REVEIL 34  // Pin de réveil (Bouton externe)
+  #define PIN_REVEIL2 35  // Pin d'entrée pour interruption (ex: detecteur)
 #endif
+
+// ESP32-C6 : pins restant à 0 au reset et au boot : 2, 3, 4, 6, 7, 14
+const int PIN_OUT0 = 2;
+const int PIN_Text = 36;  //  Text:Entrée analogique 32 à 36 et 39
+const int PIN_on = 19;  // allumage et extinction d'un système avec 2 boutons
+const int PIN_off = 19;
+
+#ifdef ESP32_v1
+const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
+const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+#endif
+#ifdef ESP32_Fire2
+const int PIN_RXModbus = 18;  // s3:18  devkitv1:16 RO
+const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+#endif
+#ifdef ESP32_uPesy
+const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
+const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+#endif
+// const int PIN_RE = 32;
+// const int PIN_DE = 33;
+const int PIN_RXSTM = 18;  // RX STM32
+const int PIN_TXSTM = 17;  // TX STM32
+#endif
+// #define sorties analogique : 25 ou 26 (avec Dacwrite)
+
+// Modbus
+#ifdef ESP32_v1
+#define MAX485_RE_NEG 32  // S3:35  devkitv1:32
+#define MAX485_DE 33      // s3:36  devkitv1:33
+#endif
+#ifdef ESP32_Fire2
+#define MAX485_RE_NEG 35  // S3:35
+#define MAX485_DE 36      // s3:36
+#endif
+#ifdef ESP32_uPesy
+#define MAX485_RE_NEG 32  // S3:35  devkitv1:32
+#define MAX485_DE 33      // s3:36  devkitv1:33
+#endif
+
+/* ESP32S3 : Serial0:Pin 42 et 43
+ */
 
 // Structure d'un message uart
 #define MSG_SIZE 40
@@ -138,46 +180,6 @@ void passage_deep_sleep(uint64_t temps);
 extern float Vbatt_Th;   // Tension batterie thermomètre
 extern bool Vbatt_Th_I;  // indicateur de réception batt sonde
 
-// ESP32-C6 : pins restant à 0 au reset et au boot : 2, 3, 4, 6, 7, 14
-const int PIN_Chaudiere = 2;
-const int PIN_Text = 36;  //  Text:Entrée analogique 32 à 36 et 39
-#ifdef ESP32_v1
-const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-#ifdef ESP32_Fire2
-const int PIN_RXModbus = 18;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-#ifdef ESP32_uPesy
-const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-const int PIN_on = 19;  // allumage et extinction d'un système avec 2 boutons
-const int PIN_off = 19;
-// const int PIN_RE = 32;
-// const int PIN_DE = 33;
-const int PIN_RXSTM = 18;  // RX STM32
-const int PIN_TXSTM = 17;  // TX STM32
-#endif
-// #define sorties analogique : 25 ou 26 (avec Dacwrite)
-
-// Modbus
-#ifdef ESP32_v1
-#define MAX485_RE_NEG 32  // S3:35  devkitv1:32
-#define MAX485_DE 33      // s3:36  devkitv1:33
-#endif
-#ifdef ESP32_Fire2
-#define MAX485_RE_NEG 35  // S3:35
-#define MAX485_DE 36      // s3:36
-#endif
-#ifdef ESP32_uPesy
-#define MAX485_RE_NEG 32  // S3:35  devkitv1:32
-#define MAX485_DE 33      // s3:36  devkitv1:33
-#endif
-
-/* ESP32S3 : Serial0:Pin 42 et 43
- */
 
 typedef enum {
   EVENT_NONE = 0,
@@ -194,8 +196,7 @@ typedef enum {
   EVENT_3min,
   EVENT_CYCLE,
   EVENT_UART1,
-  EVENT_ACTIV_CHAUD,
-  EVENT_CYCLE_CHAUD
+  EVENT_ACTIV_CYCLE
 } systeme_eve_type_t;
 
 // Structure d'un événement tache sequenceur
@@ -240,6 +241,8 @@ extern TimerHandle_t debounceTimer;
 extern TimerHandle_t xTimer_activ_chaud;
 extern RTC_DATA_ATTR uint8_t periode_cycle;
 extern RTC_DATA_ATTR uint8_t mode_rapide;
+
+extern uint16_t compteur_detection;
 extern float Teau, Tint, Text, loi_eau_Tint, T_obj, T_loi_eau;
 
 #define MAX_DUMP 6900              // 600 + 1050 car par graphique
@@ -291,8 +294,8 @@ extern unsigned long last_remote_Tint_time, last_remote_Text_time,
 extern uint16_t err_Tint, err_Text, err_Heure;
 extern uint8_t chaudiere;
 
-extern float tempI_moy24h, tempE_moy24h, cout_moy24h;
-extern uint8_t cpt24_Tint, cpt24_Text, cpt24_Cout;
+extern float tempI_moy24h, tempE_moy24h, PIR_24h;
+extern uint8_t cpt24_Tint, cpt24_Text, cpt24_PIR;
 
 extern char mdp_routeur[];
 extern int16_t graphique[NB_Val_Graph][NB_Graphique];
@@ -330,8 +333,8 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char* valeur);
 uint8_t requete_Set_String_appli(int param, const char* texte);
 uint8_t lecture_Tint(float* mesure);
 uint8_t lecture_Text(float* mesure);
-void event_mesure_temp();
-void maj_etat_chaudiere();
+void event_cycle();
+void maj_etat_cycle();
 void event_mesure_compresseur();
 
 // Fonctions WiFi
