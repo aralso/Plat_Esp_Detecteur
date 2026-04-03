@@ -129,18 +129,24 @@ const char index_html[] PROGMEM = R"rawliteral(
           <nav id="menu">
 
             <div class="input-group">
-                <label for="PIR_D">Nb Detections :</label>
+                <label for="PIR_D">Nb Detections depuis 5 min :</label>
                 <div class="text">
                     <span id="PIR_D" class="default-action"></span>
                 </div>
             </div>
 
+            <div class="input-group">
+                <label for="batS">Tension batterie :</label>
+                <div class="text">
+                    <span id="batS" class="default-action"></span>&nbspV
+                </div>
+            </div>
 
             <div class="input-group" id="batS-group">
               <label for="batS"></label>
               <div class="text">
                 <span class="alert-icon">⚠️</span>
-                Batterie Sonde faible :
+                Batterie faible :
                 <span id="batS" class="default-action"></span> V
               </div>
             </div>
@@ -364,10 +370,15 @@ const char index_html[] PROGMEM = R"rawliteral(
                   8 : Skip graph : 1 valeur sur X<br>
                   9 : Seuil batt sonde<br>
                   10: Freq Log batterie(jours)<br>
-                  11 : consigne économie<br>
                   12 : temps éveillé (sec) (sonde)<br>
+                  13 : activation OTA<br>
+                  14 : pause entre detections (sec)<br>
+                  15 : seuil bas arret ESP<br>
+                  40 : activ esp_now<br>4-1
                   41 : canal wifi <br>
-                  42 : canal wifi prérentiel (sonde)<brW
+                  42 : canal wifi prérentiel (sonde)<br>
+                  43 : puissance wifi<br>
+                  44 : wifi_sleep (0,1,2)<br>
                   <br>
 
               <div class="input-group" id="set-regT-group">
@@ -404,7 +415,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                   8 : websocket On (1-2)<br>
                   9 : websocket<br>
                   10 : websock id<br>
-                  11 : adresse Chaudiere<br>
+                  11 : adresse Mac<br>
     
 
 

@@ -23,9 +23,9 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
 //void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
-void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
+  void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
 #else
-void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
+  void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
 #endif
 
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
@@ -34,20 +34,27 @@ uint8_t parseMacString(const char* str, uint8_t mac[6]);
 uint16_t compteur_detection=0;
 uint16_t compteur_detection_1h=0;
 
+uint8_t pause_detection;
+unsigned long last_detection_time=0;
+
 uint16_t Nb_PI[NB_VAL_TAB];
 
 uint8_t  WIFI_CHANNEL;
 RTC_DATA_ATTR uint8_t etat_now;
 uint16_t Seuil_batt_sonde;  // millivolt
+uint16_t Seuil_batt_arret_ESP;
 uint8_t Nb_jours_Batt_log;
+uint16_t prolong_veille;
+
 uint8_t compteur_graph;
 
 
-RTC_DATA_ATTR uint8_t mac_chaudiere[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_chaudiere
+RTC_DATA_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_chaudiere
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
 
-uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo);
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow *message);
+void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf);
 
 
 #ifdef Temp_int_DS18B20
@@ -72,11 +79,18 @@ DHT dht[] = {
 #endif
 
 // Temperature intérieure
-float Tint;
-
+float Tint, Text;
 uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
-float Text;
+
+
+// ---------FONCTIONS DEFINIES AILLEURS -----------------
+
+int readLastLogsG(int nombre);
+
+
+
+// ----------  FONCTIONS APPLI --------------
 
 void init_10_secondes()
 {
@@ -85,6 +99,10 @@ void init_10_secondes()
 //setup au debut
 void setup_0()
 {
+
+  #ifdef ESP32_uPesy
+    pinMode(PIN_Vbatt, INPUT);
+  #endif
 
   /*if (NB_Graphique==6)
   {
@@ -125,6 +143,43 @@ void setup_nvs()
 
   if (!rtc_valid)  // si le domaine RAM RTC est valide, on ne recharge pas les valeurs de l'eeprom 
   {
+    Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 0);
+    if ((!Nb_jours_Batt_log) || (Nb_jours_Batt_log > 15)) {  // 1 à 15
+      Nb_jours_Batt_log = 2;  // Freq : tous les2 jours
+      preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
+      Serial.printf("Raz Freq log Batt: %i\n\r", Nb_jours_Batt_log);
+    }
+    else  Serial.printf("Freq log batt: %i\n\r", Nb_jours_Batt_log);
+
+    // esp_now_actif
+    esp_now_actif = preferences_nvs.getUChar("EspN", 10);
+    if (esp_now_actif < 2)  
+      Serial.printf("Esp_now actif : %i\n\r", esp_now_actif);
+    else {
+      esp_now_actif = 0;
+      Serial.println("Raz Esp_now : inactif");
+    }
+    // seuil batterie basse pour arret ESP
+    Seuil_batt_arret_ESP = preferences_nvs.getUShort("SeAr", 100);
+    if ( (!Seuil_batt_arret_ESP) || ((Seuil_batt_arret_ESP >= 3000) && (Seuil_batt_arret_ESP <= 3600)))   // 3V à 3,6V
+        Serial.printf("Seuil batterie arret ESP: %i\n\r", Seuil_batt_arret_ESP);
+    else {
+      Seuil_batt_arret_ESP = 3300;
+      preferences_nvs.putUShort("SeAr", Seuil_batt_arret_ESP);
+      Serial.printf("Raz seuil batterie arret ESP: %i\n\r", Seuil_batt_arret_ESP);
+    }
+
+
+    // pause entre 2 detections PIR
+    pause_detection = preferences_nvs.getUChar("PauD", 0);
+    if ((pause_detection < 1) || (pause_detection > 60)) {  // de 1 à 60 secondes
+      pause_detection = 8;
+      preferences_nvs.putUChar("PauD", pause_detection);
+      Serial.printf("Raz pause detection : %i sec\n\r", pause_detection);
+    }
+    else  Serial.printf("Pause entre detections : %i sec\n\r", pause_detection);
+
+
     // periode du cycle : lecture Temp ext par internet
     periode_cycle = preferences_nvs.getUChar("cycle", 0);  // de 10 a 120
     if ((periode_cycle < 2) || (periode_cycle > 30)) {
@@ -148,11 +203,11 @@ void setup_nvs()
       // Initialisation variable adresse Mac chaudiere
       String storedString = preferences_nvs.getString("MacC", "");
 
-      if (parseMacString(storedString.c_str(), mac_chaudiere))
+      if (parseMacString(storedString.c_str(), mac_gw))
       {
         Serial.printf("MAC chaudiere : %02X:%02X:%02X:%02X:%02X:%02X\n",
-          mac_chaudiere[0], mac_chaudiere[1], mac_chaudiere[2],
-          mac_chaudiere[3], mac_chaudiere[4], mac_chaudiere[5] );
+          mac_gw[0], mac_gw[1], mac_gw[2],
+          mac_gw[3], mac_gw[4], mac_gw[5] );
       }
       else {  Serial.println("MAC chaudière absente ou invalide");  }
 
@@ -187,19 +242,12 @@ void setup_nvs()
 
     Seuil_batt_sonde = preferences_nvs.getUShort("SeBa", 0);
     if ((Seuil_batt_sonde < 1800) || (Seuil_batt_sonde >4500)) {  // 1,8V à 4,5V
-      Seuil_batt_sonde = 3200;  // Seuil 3.2V
+      Seuil_batt_sonde = 3800;  // Seuil 3.8V
       preferences_nvs.putUShort("SeBa", Seuil_batt_sonde);
       Serial.printf("Raz batterie sonde: %i\n\r", Seuil_batt_sonde);
     }
     else  Serial.printf("Seuil batterie sonde: %i\n\r", Seuil_batt_sonde);
 
-    Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 0);
-    if ((!Nb_jours_Batt_log) || (Nb_jours_Batt_log > 15)) {  // 1 à 15
-      Nb_jours_Batt_log = 2;  // Freq : tous les2 jours
-      preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
-      Serial.printf("Raz Freq log Batt: %i\n\r", Nb_jours_Batt_log);
-    }
-    else  Serial.printf("Freq log batt: %i\n\r", Nb_jours_Batt_log);
 
   #endif  // Fin ESP_chaudiere et PAC
 
@@ -269,6 +317,10 @@ void setup_1()
 void setup_2()
 {
   #ifdef ESP_TJ_ACTIF
+
+    // lecture des données sauvegardées dans la partition log_flashG
+    readLastLogsG(99);
+
     // Configuration WiFi en mode Station pour ESP-NOW
 
     if ((mode_reseau==13) )
@@ -301,17 +353,17 @@ void setup_2()
     //else
     //  Serial.println(WiFi.softAPmacAddress());
 
-    // Stockage de l'adresse MAC dans le tableau mac_chaudiere[6]
+    // Stockage de l'adresse MAC dans le tableau mac_gw[6]
     #ifdef ESP_VEILLE
         Serial.println(WiFi.macAddress());
     #else
       String macStr = WiFi.macAddress();
       sscanf(macStr.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-            &mac_chaudiere[0], &mac_chaudiere[1], &mac_chaudiere[2],
-            &mac_chaudiere[3], &mac_chaudiere[4], &mac_chaudiere[5]);
+            &mac_gw[0], &mac_gw[1], &mac_gw[2],
+            &mac_gw[3], &mac_gw[4], &mac_gw[5]);
       Serial.printf("   MAC : %02X:%02X:%02X:%02X:%02X:%02X\n",
-            mac_chaudiere[0], mac_chaudiere[1], mac_chaudiere[2],
-            mac_chaudiere[3], mac_chaudiere[4], mac_chaudiere[5]);
+            mac_gw[0], mac_gw[1], mac_gw[2],
+            mac_gw[3], mac_gw[4], mac_gw[5]);
     #endif
 
     Serial.printf("   Canal WiFi: %d\n", current_channel);
@@ -386,14 +438,14 @@ uint8_t requete_Set_appli (String param, float valf)
       }
     }*/
 
-    if (param == "vbatt")
+    /*if (param == "vbatt")
     {
       res = 0;
       Vbatt_Th = valf;
       Vbatt_Th_I = 1;
 
       Serial.printf("Réception Vbatt Distante : %.2fV\n", Vbatt_Th);
-    }
+    }*/
 
 
   return res;
@@ -413,6 +465,22 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
   {
     res = 0;
     *valeur = Nb_jours_Batt_log;
+  }
+  if (reg == 14)  // registre 14 : pause entre detections (sec)
+  {
+    res = 0;
+    *valeur = pause_detection;
+  }
+  if (reg == 15)  // registre 15 : seuil batterie basse arret ESP
+  {
+    res = 0;
+    *valeur = Seuil_batt_arret_ESP;
+  }
+
+  if (reg == 40)  // registre 40 : activation esp_now
+  {
+    res = 0;
+    *valeur = esp_now_actif;
   }
   
   if (reg == 41)  // registre 41 : canal WiFi actuel
@@ -460,7 +528,31 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
       preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
     }
   }
-
+  if (param == 14)  // registre 14 : pause entre detections (sec)
+  {
+    if ((valeur) && (valeur <= 60)) {
+      res = 0;
+      pause_detection = valeur;
+      preferences_nvs.putUChar("PauD", pause_detection);
+    }
+  }
+  if (param == 15)  // registre 15 : seuil batterie basse arret ESP
+  {
+    if ( (!valeur) ||((valeur >= 3000) && (valeur <= 3600))) {  // 0 (inactif) ou entre 3V et 3,6V
+      res = 0;
+      Seuil_batt_arret_ESP = valeur;
+      preferences_nvs.putUShort("SeAr", Seuil_batt_arret_ESP);
+    }
+  }
+  if (param == 40)  // registre 40 : activation esp_now
+  {
+    if ((valeur == 0) || (valeur == 1))
+    {
+      res = 0;
+      esp_now_actif = valeur;
+      preferences_nvs.putUChar("EspN", esp_now_actif);
+    }
+  }
   if (param == 41)  // registre 41 : last_wifi_channel
   {
     if ((valeur) && (valeur <= 13))
@@ -489,13 +581,13 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
   int paramV = var.toInt();
   // valeur limité a 50 caractères
   
-  if (paramV == 11)  // registre 11 : adresse MAC ESP_Chaudiere
+  if (paramV == 11)  // registre 11 : adresse MAC ESP_Gateway
   {
     res = 0;
     snprintf(valeur, 18,
            "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac_chaudiere[0], mac_chaudiere[1], mac_chaudiere[2],
-           mac_chaudiere[3], mac_chaudiere[4], mac_chaudiere[5]);
+           mac_gw[0], mac_gw[1], mac_gw[2],
+           mac_gw[3], mac_gw[4], mac_gw[5]);
   }
 
   return res;
@@ -519,7 +611,7 @@ uint8_t requete_Set_String_appli(int param, const char *texte)
 
     if (param == 11)  // registre 11 : adresse Mac chaudiere
     {
-      if (!parseMacString(texte, mac_chaudiere))
+      if (!parseMacString(texte, mac_gw))
       {
           Serial.println("MAC chaudière invalide");
       }
@@ -761,11 +853,18 @@ float readBatteryVoltage() {
   // Lecture ADC (0-4095) sur PIN_Vbatt
   // Sur ESP32 DevKit V1, l'ADC est calibré par défaut
   int raw = analogRead(PIN_Vbatt);
-  
+  float voltage = 0.0;  
   // Conversion:
   // raw / 4095.0 * 3.3V (tension ref approx) * 2 (pont diviseur) * 1.1 (facteur corection empirique souvent nécessaire sur ESP32)
   // On commence sans facteur 1.1 pour tester
-  float voltage = (raw / 4095.0) * 3.3 * 2.5; 
+  #ifdef ESP32_Fire2
+     voltage = (raw / 4095.0) * 3.3 * 2.5; 
+  #endif
+
+  #ifdef ESP32_uPesy
+     voltage = (raw / 4095.0) * 3.3 * 1.411 ;
+  #endif
+
   return voltage;
 }
 
@@ -795,11 +894,11 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   memcpy(&receivedMessage, incomingData, sizeof(receivedMessage));
 
   Serial.print("   Type: "); Serial.print(receivedMessage.type);
-  Serial.print(" | Valeur: "); Serial.println(receivedMessage.value);
+  Serial.print(" | Valeur: "); Serial.println(receivedMessage.valuef);
   Serial.println("=========================================\n");
 
   if (receivedMessage.type == 1) { // Temperature
-    float Trecue = receivedMessage.value;
+    float Trecue = receivedMessage.valuef;
     if ((Trecue > -10.0) && (Trecue < 49.99f)) 
     {
       Tint = Trecue;
@@ -816,9 +915,8 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
     Serial.printf("✅ Tint mise à jour: %.2f°C\n", Tint);
   }
   else if (receivedMessage.type == 2) { // Batterie
-    Vbatt_Th = receivedMessage.value;
-    Serial.printf("✅ Vbatt_Th mise à jour: %.2fV\n", Vbatt_Th);
-    Vbatt_Th_I = 1;
+    Vbatt_ESP = receivedMessage.valuef;
+    Serial.printf("✅ Vbatt_Th mise à jour: %.2fV\n", Vbatt_ESP);
   }
   else {
     Serial.printf("⚠️ Type de message inconnu: %d\n", receivedMessage.type);
@@ -826,132 +924,117 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 }
 #endif
 
-
-// Sonde de temperature envoie valeur de temp à la chaudiere par ESP_now
-void envoi_temp_esp_chaudiere()
+void envoi_detection()
 {
-    // --- MODE THERMOMETRE DISTANT (ESP-NOW) ---
-    uint8_t Tint_erreur = lecture_Tint(&Tint);  // Mesure locale
-    if (Tint_erreur) 
-    {
-      Tint=25.0;
-      #ifdef DEBUG
-            Tint = 18.0;
-      #endif
-    }
-
-    if (mac_chaudiere[0] || mac_chaudiere[3] || mac_chaudiere[4])
-    {
-      // Initialisation WiFi en mode Station (nécessaire pour ESP-NOW)
-      WiFi.mode(WIFI_STA);
-      WiFi.disconnect();
-
-      if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        ESP.restart();
-      }
-
-      esp_now_register_send_cb(OnDataSent);
-
-      // Préparation du Peer (Chaudière)
-      esp_now_peer_info_t peerInfo;
-      memset(&peerInfo, 0, sizeof(peerInfo)); // Initialisation complète à zéro
-      memcpy(peerInfo.peer_addr, mac_chaudiere, 6);
-      peerInfo.channel = 0; // Le canal sera défini avant l'ajout
-      peerInfo.encrypt = false;
-      peerInfo.ifidx = WIFI_IF_STA; // Interface WiFi Station (OBLIGATOIRE)
-
-      // 🚀 OPTION 1 : Forcer le canal connu (plus rapide et économe en énergie)
-      // Si vous connaissez le canal de votre routeur, décommentez ces lignes :
-      /*
-      Serial.printf("🎯 Forçage canal %d (défini dans variables.h)\n", WIFI_CHANNEL);
-      esp_wifi_set_promiscuous(true);
-      esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-      esp_wifi_set_promiscuous(false);
-      last_wifi_channel = WIFI_CHANNEL; // Pour la prochaine fois
-      */
-
-      // 🔍 OPTION 2 : Scan robuste des canaux (si le canal n'est pas connu ou change)
-
-      Serial.printf("🔍 Scan de 13 canaux (priorité: canal %d)\n", last_wifi_channel);
-      uint8_t deliverySuccess = false;
-      uint8_t current_channel;
-      if (!last_wifi_channel || last_wifi_channel>13) last_wifi_channel=1;  // si corrompu : channel 1
-
-      if (etat_now==0)  // encore aucun envoi essayé
-      {
-        for (uint8_t k = 0; k < 13; k++)  // => channel 1 à 13
-        {
-          current_channel = k + last_wifi_channel;
-          if (current_channel > 13) current_channel -= 13;
-          deliverySuccess = envoi_now(current_channel, &peerInfo);
-          if (deliverySuccess) break;
-        }
-        if (deliverySuccess) etat_now=2;
-        else etat_now=1;
-      }
-      else if (etat_now==2)  // essai precedent reussi
-      {
-        deliverySuccess = envoi_now(last_wifi_channel, &peerInfo);
-        if (!deliverySuccess) etat_now=4; // prochain essai sur le meme channel+ scan
-      }
-      else if (etat_now==1 || etat_now==3)  // essai precedent raté
-      {
-        deliverySuccess = envoi_now(last_wifi_channel, &peerInfo);
-        if (deliverySuccess) etat_now=2; 
-        else 
-        {
-          // prochain essai sur le channel suivant
-          last_wifi_channel++;
-          if (last_wifi_channel > 13) last_wifi_channel=1;
-        }
-      }
-      else if (etat_now==4)  // envoi precedent raté mais celui d'avan réussi
-      {
-        for (uint8_t k = 0; k < 14; k++)  // => channel 1 à 13 et 1 de plus
-        {
-          current_channel = k + last_wifi_channel;
-          if (current_channel > 13) current_channel -= 13;
-          deliverySuccess = envoi_now(current_channel, &peerInfo);
-          if (deliverySuccess) break;
-        }
-        if (deliverySuccess) etat_now=2;
-        else etat_now=3;
-      }
-      else etat_now=0; // si etat_now corrompu, remise à 0
-
-      Serial.printf("etat_now:%i\n\r", etat_now);
-      
-      cpt_cycle_batt++;
-      if (cpt_cycle_batt >= 90) cpt_cycle_batt=0;
-
-      if (deliverySuccess) // envoi reussi
-      {   
-        // Envoi tension batterie tous les 90 cycles (23h)
-        if (!cpt_cycle_batt)
-        {
-          float Vbatt = readBatteryVoltage();
-          delay(50);
-          Message_EspNow message;
-          message.type = 2; // Batterie
-          message.value = Vbatt;
-          esp_now_send(mac_chaudiere, (uint8_t *) &message, sizeof(message));
-          Serial.printf("Envoi batterie: %.2fV (cycle %d)\n", Vbatt, cpt_cycle_batt);
-        }
-      }
-    }
-    else
-      Serial.println("Adresse Mac chaudiere nulle");
-
-    // Deep Sleep
-
-      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
-      if (mode_rapide==12)
-      sleep_time = (uint64_t)periode_cycle * 1000000;
-      passage_deep_sleep(sleep_time);
+  // --- MODE SONDE DISTANTE (ESP-NOW) ---
+  uint8_t Tint_erreur = lecture_Tint(&Tint);  // Mesure locale
+  if (Tint_erreur) 
+  {
+    Tint=25.0;
+    #ifdef DEBUG
+          Tint = 18.0;
+    #endif
+  }
+  envoi_data_gateway(1, 1, Tint);  // type 1: detection, valeur Tint dans partie float du message  
 }
 
-uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo)
+// envoie data à la gateway par ESP_now
+void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf)
+{
+  Message_EspNow mess_esp;
+  mess_esp.type = type;
+  //mess_esp.value16 = valeur16;
+  mess_esp.valuef = valeurf;
+
+  if ((mac_gw[0] || mac_gw[3] || mac_gw[4]) && (esp_now_actif==1))
+  {
+    // Initialisation WiFi en mode Station (nécessaire pour ESP-NOW)
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+
+    if (esp_now_init() != ESP_OK) {
+      Serial.println("Error initializing ESP-NOW");
+      ESP.restart();
+    }
+
+    esp_now_register_send_cb(OnDataSent);
+
+    // Préparation du Peer (Chaudière)
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo)); // Initialisation complète à zéro
+    memcpy(peerInfo.peer_addr, mac_gw, 6);
+    peerInfo.channel = 0; // Le canal sera défini avant l'ajout
+    peerInfo.encrypt = false;
+    peerInfo.ifidx = WIFI_IF_STA; // Interface WiFi Station (OBLIGATOIRE)
+
+    // 🚀 OPTION 1 : Forcer le canal connu (plus rapide et économe en énergie)
+    // Si vous connaissez le canal de votre routeur, décommentez ces lignes :
+    /*
+    Serial.printf("🎯 Forçage canal %d (défini dans variables.h)\n", WIFI_CHANNEL);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous(false);
+    last_wifi_channel = WIFI_CHANNEL; // Pour la prochaine fois
+    */
+
+    // 🔍 OPTION 2 : Scan robuste des canaux (si le canal n'est pas connu ou change)
+
+    Serial.printf("🔍 Scan de 13 canaux (priorité: canal %d)\n", last_wifi_channel);
+    uint8_t deliverySuccess = false;
+    uint8_t current_channel;
+    if (!last_wifi_channel || last_wifi_channel>13) last_wifi_channel=1;  // si corrompu : channel 1
+
+    if (etat_now==0)  // encore aucun envoi essayé
+    {
+      for (uint8_t k = 0; k < 13; k++)  // => channel 1 à 13
+      {
+        current_channel = k + last_wifi_channel;
+        if (current_channel > 13) current_channel -= 13;
+        deliverySuccess = envoi_now(current_channel, &peerInfo, &mess_esp);
+        if (deliverySuccess) break;
+      }
+      if (deliverySuccess) etat_now=2;
+      else etat_now=1;
+    }
+    else if (etat_now==2)  // essai precedent reussi
+    {
+      deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, &mess_esp);
+      if (!deliverySuccess) etat_now=4; // prochain essai sur le meme channel+ scan
+    }
+    else if (etat_now==1 || etat_now==3)  // essai precedent raté
+    {
+      deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, &mess_esp);
+      if (deliverySuccess) etat_now=2; 
+      else 
+      {
+        // prochain essai sur le channel suivant
+        last_wifi_channel++;
+        if (last_wifi_channel > 13) last_wifi_channel=1;
+      }
+    }
+    else if (etat_now==4)  // envoi precedent raté mais celui d'avant réussi
+    {
+      for (uint8_t k = 0; k < 14; k++)  // => channel 1 à 13 et 1 de plus
+      {
+        current_channel = k + last_wifi_channel;
+        if (current_channel > 13) current_channel -= 13;
+        deliverySuccess = envoi_now(current_channel, &peerInfo, &mess_esp);
+        if (deliverySuccess) break;
+      }
+      if (deliverySuccess) etat_now=2;
+      else etat_now=3;
+    }
+    else etat_now=0; // si etat_now corrompu, remise à 0
+
+    Serial.printf("etat_now:%i\n\r", etat_now);
+    
+  }
+  else
+    Serial.println("Adresse Mac gateway nulle");
+
+}
+
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
 {
   uint8_t result = false;
 
@@ -980,8 +1063,8 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo)
   delay(50); // Délai pour stabilisation du canal
 
   // Ajouter le peer sur ce canal
-  if (esp_now_is_peer_exist(mac_chaudiere)) {
-    esp_now_del_peer(mac_chaudiere);
+  if (esp_now_is_peer_exist(mac_gw)) {
+    esp_now_del_peer(mac_gw);
   }
   peerInfo->channel = actual_channel; // Utiliser le canal réel
   if (esp_now_add_peer(peerInfo) != ESP_OK){
@@ -989,21 +1072,18 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo)
   }
   //Serial.println("✅ Peer ajouté");
 
-  // Envoi Température
-  Message_EspNow message;
-  message.type = 1; // Température
-  message.value = Tint;
+  // Envoi Message
   
   // 🔍 DIAGNOSTIC: Afficher les infos avant envoi
   /*Serial.printf("📤 Tentative envoi sur canal %d vers MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                 actual_channel,
-                mac_chaudiere[0], mac_chaudiere[1], mac_chaudiere[2],
-                mac_chaudiere[3], mac_chaudiere[4], mac_chaudiere[5]);*/
-  Serial.printf("   Message: Type=%d, Valeur=%.2f°C\n", message.type, message.value);
+                mac_gw[0], mac_gw[1], mac_gw[2],
+                mac_gw[3], mac_gw[4], mac_gw[5]);*/
+  Serial.printf("   Message: Type=%d, val:%i Float=%.2f°C\n", message->type, 0, message->valuef); // message->value16,
   
   ackReceived=0;
   ackChannel = -1;
-  esp_err_t resulta = esp_now_send(mac_chaudiere, (uint8_t *) &message, sizeof(message));
+  esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, sizeof(Message_EspNow));
 
   if (resulta == ESP_OK)
   {

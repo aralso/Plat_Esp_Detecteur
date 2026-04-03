@@ -6,8 +6,8 @@
 // variables externes
 
 
-#define ESP_TJ_ACTIF      // Rôle principal : gestion de la chaudière
-//#define ESP_VEILLE  // Rôle distant : sonde de température
+#define ESP_TJ_ACTIF      // Rôle principal 
+//#define ESP_VEILLE  // Rôle distant : envoi data
 
 // Hardware
 //#define MODE_WT32  // WT32-Eth01 sinon ESP32-CAM ou DOIT ESP32 Devkit V1
@@ -22,6 +22,8 @@
   #define MODE_Wifi  // Wifi sinon Ethernet
   //#define Sans_securite
   #define Sans_websocket
+  #define OTA
+  #define CLASS_A
 #endif
 
 #ifdef ESP_TJ_ACTIF  // Chaudiere
@@ -49,16 +51,17 @@
 #define LATITUDE "48.8461"  // Garches => pour récupération Temp Ext
 #define LONGITUDE "2.1889"
 
-// Definir le canal WIFI ici (doit correspondre au routeur pour la Chaudière)
+// Definir le canal WIFI ici (doit correspondre au routeur pour la gateway)
 // ⚠️ IMPORTANT : Ce canal DOIT correspondre au canal de votre routeur WiFi
-// "garches" Pour le trouver : regardez les logs de la chaudière au démarrage
+// "garches" Pour le trouver : regardez les logs de la gateway au démarrage
 
-// Adresse par défaut de la chaudière (B0:CB:D8:E9:0C:74)
-const uint8_t MAC_CHAUDIERE[] = {0xB0, 0xCB, 0xD8, 0xE9, 0x0C, 0x74};
+// Adresse par défaut de la GW (B0:CB:D8:E9:0C:74)
+//const uint8_t MAC_GW[] = {0x08, 0xA6, 0xF7, 0x1C, 0xD0, 0x90}; //B0, 0xCB, 0xD8, 0xE9, 0x0C, 0x74};
 
 typedef struct {
   uint8_t type;  // 1: Temperature, 2: Batterie
-  float value;
+  //uint16_t value16;
+  float valuef;
 } Message_EspNow;
 
 //  -------  CONFIGURATION DES PINS
@@ -93,44 +96,44 @@ typedef struct {
 const int PIN_Tint22 = 5;  // GPIO IN1 Temp interieure DHT22
 const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
 #else                      // ESP32_DevKit
-// const int PIN_Tint = 13;  Défini dans le fichier appli.ino
-const int PIN_Tint22 = 5;  // GPIO IN1 Temp interieure DHT22
-#define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
+  // const int PIN_Tint = 13;  Défini dans le fichier appli.ino
+  const int PIN_Tint22 = 5;  // GPIO IN1 Temp interieure DHT22
 
-// Pin Reveil
-#ifdef ESP32_v1
-  #define PIN_REVEIL 12  // Pin de réveil (Bouton externe)
-#endif
-#ifdef ESP32_Fire2    // Firebeetle
-  #define PIN_REVEIL 4  // Pin de réveil (Bouton externe) PIN RTC : 0 à 7
-#endif
-#ifdef ESP32_uPesy
-  #define PIN_REVEIL 34  // Pin de réveil (Bouton externe)
-  #define PIN_REVEIL2 35  // Pin d'entrée pour interruption (ex: detecteur)
-#endif
+  // Pin Reveil
+  #ifdef ESP32_v1
+    #define PIN_REVEIL 12  // Pin de réveil (Bouton externe)
+    #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
+  #endif
+  #ifdef ESP32_Fire2    // Firebeetle
+    #define PIN_REVEIL 4  // Pin de réveil (Bouton externe) PIN RTC : 0 à 7
+    #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
+  #endif
+  #ifdef ESP32_uPesy
+    // Nota : BTN : 14 et 25
+    #define PIN_Vbatt 35    // Pin Surveillance Batterie (LiPo/)
+    #define PIN_OUT0 4     // Power pour alimenter le capteur PIR : 10uA
+    #define PIN_REVEIL 32   // Pin de réveil (Bouton externe)
+    #define PIN_REVEIL2 33  // Pin d'entrée pour interruption (ex: detecteur)
+  #endif
 
-// ESP32-C6 : pins restant à 0 au reset et au boot : 2, 3, 4, 6, 7, 14
-const int PIN_OUT0 = 2;
-const int PIN_Text = 36;  //  Text:Entrée analogique 32 à 36 et 39
-const int PIN_on = 19;  // allumage et extinction d'un système avec 2 boutons
-const int PIN_off = 19;
+  // ESP32-C6 : pins restant à 0 au reset et au boot : 2, 3, 4, 6, 7, 14
 
-#ifdef ESP32_v1
-const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-#ifdef ESP32_Fire2
-const int PIN_RXModbus = 18;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-#ifdef ESP32_uPesy
-const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
-const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
-#endif
-// const int PIN_RE = 32;
-// const int PIN_DE = 33;
-const int PIN_RXSTM = 18;  // RX STM32
-const int PIN_TXSTM = 17;  // TX STM32
+  #ifdef ESP32_v1
+    const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
+    const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+  #endif
+  #ifdef ESP32_Fire2
+    const int PIN_RXModbus = 18;  // s3:18  devkitv1:16 RO
+    const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+  #endif
+  #ifdef ESP32_uPesy
+    const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
+    const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
+  #endif
+  // const int PIN_RE = 32;
+  // const int PIN_DE = 33;
+  const int PIN_RXSTM = 18;  // RX STM32
+  const int PIN_TXSTM = 17;  // TX STM32
 #endif
 // #define sorties analogique : 25 ou 26 (avec Dacwrite)
 
@@ -176,8 +179,7 @@ uint8_t requete_GetReg(int reg, float* valeur);
 
 void passage_deep_sleep(uint64_t temps);
 
-extern float Vbatt_Th;   // Tension batterie thermomètre
-extern bool Vbatt_Th_I;  // indicateur de réception batt sonde
+extern float Vbatt_ESP;   // Tension batterie ESP
 
 
 typedef enum {
@@ -235,6 +237,8 @@ constexpr int NB_Val_Graph = 99;
 #define MAX_DUMP 6900              // 600 + 1050 car par graphique
 extern char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
 
+extern RTC_DATA_ATTR uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
+
 extern uint8_t protocole;
 extern QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
 extern uint16_t erreur_queue;
@@ -272,6 +276,8 @@ extern uint8_t cpt24_Tint, cpt24_Text, cpt24_PIR;
 extern char mdp_routeur[];
 extern int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_sonde;  // millivolt
+extern uint16_t Seuil_batt_arret_ESP;  // millivolt
+
 
 extern RTC_DATA_ATTR uint8_t etat_now;
 extern uint8_t Nb_jours_Batt_log;
@@ -302,6 +308,7 @@ uint8_t requete_Set_String_appli(int param, const char* texte);
 uint8_t lecture_Tint(float* mesure);
 uint8_t lecture_Text(float* mesure);
 void event_cycle();
+void envoi_detection();
 
 // Fonctions WiFi
 uint8_t connectWiFiWithDiagnostic();
